@@ -44,11 +44,27 @@ uv run transcribe-microphone --chunk-seconds 5.5
 
 Use a dedicated microphone, the Medium model, and approximately 5–6 second chunks. This is an observational baseline rather than a controlled benchmark. It is near-live transcription, not word-by-word captions: visible delay is one collected chunk plus Whisper processing time.
 
+### VAD phrase-segmentation trial (2026-08-09)
+
+The same local Medium Whisper and translation pipeline was also tested with
+pause-based segmentation:
+
+```sh
+uv run transcribe-microphone --segmentation vad --vad-silence-seconds 0.45 --output-format ndjson | uv run buffer-phrases | uv run translate-stream
+```
+
+In an informal live church-talk reading, pause-delimited phrases were a much
+better listener/viewer experience than the fixed overlapping windows. The test
+showed no noticeable loss of English recognition accuracy, and the previously
+visible duplicate/overlap fragments were not observed. The pause-based latency
+felt natural and preferable to translating arbitrary short windows. Keep the
+fixed Medium 5/4 mode as a comparison fallback while more talks are evaluated.
+
 ## Known limitations
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.
 - The microphone signal is still the main quality variable; compare a saved continuous recording with live-capture windows before drawing model conclusions.
-- Overlap de-duplication is conservative and may still leave repeated text or miss a difficult boundary phrase.
+- Fixed-window overlap de-duplication is conservative and may still leave repeated text or miss a difficult boundary phrase; VAD mode reduced this in the initial trial.
 
 ## Next experiments
 
@@ -56,3 +72,4 @@ Use a dedicated microphone, the Medium model, and approximately 5–6 second chu
 2. Run a sustained 5–10 minute English talk and note accuracy, lag, and listening-relevant errors.
 3. Add explicit input-device selection and basic input-level visibility.
 4. Evaluate continuous overlapping windows against a saved continuous recording of the same speech.
+5. Repeat the VAD comparison with 0.45 and 0.5 seconds of phrase-end silence over a sustained 5–10 minute talk.

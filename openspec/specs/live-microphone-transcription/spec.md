@@ -4,14 +4,18 @@
 TBD - created by archiving change add-live-microphone-transcription. Update Purpose after archive.
 ## Requirements
 ### Requirement: Run continuous microphone transcription
-The system SHALL provide a `transcribe-microphone` command that captures audio continuously from the default system microphone, transcribes queued overlapping windows locally with Whisper, and continues until interrupted. By default it SHALL use 5-second windows beginning every 4 seconds, and print completed transcript text for successive Whisper windows. With `--output-format ndjson`, it SHALL emit one finalized English JSON event per non-empty completed transcript on standard output and write the readable English transcript to standard error.
+The system SHALL provide a `transcribe-microphone` command that captures audio continuously from the default system microphone, transcribes queued audio locally with Whisper, and continues until interrupted. By default it SHALL use fixed 5-second windows beginning every 4 seconds and print completed transcript text for successive Whisper windows. With `--segmentation vad`, it SHALL use local pause-delimited phrase audio instead. With `--output-format ndjson`, it SHALL emit one finalized English JSON event per non-empty completed transcript on standard output and write the readable English transcript to standard error.
 
-#### Scenario: Start live transcription
+#### Scenario: Start fixed-window live transcription
 - **WHEN** a user runs `uv run transcribe-microphone` with microphone permission and a usable Whisper installation
-- **THEN** the command SHALL remain active, continuously capture microphone audio, use 5-second windows beginning every 4 seconds, and print completed transcript text for successive Whisper windows
+- **THEN** the command SHALL remain active, continuously capture microphone audio, use fixed 5-second windows beginning every 4 seconds, and print completed transcript text for successive Whisper windows
+
+#### Scenario: Start VAD live transcription
+- **WHEN** a user runs `uv run transcribe-microphone --segmentation vad` with microphone permission, a usable local VAD installation, and a usable Whisper installation
+- **THEN** the command SHALL continuously capture microphone audio and send pause-delimited bounded phrases to Whisper
 
 #### Scenario: Ongoing transcription output
-- **WHEN** the command processes successive microphone windows
+- **WHEN** the command processes successive microphone windows or VAD phrases
 - **THEN** it SHALL NOT print a recurring Whisper model-status line between transcript lines
 
 #### Scenario: Structured transcript output

@@ -49,14 +49,8 @@ No migration is required. Existing commands and fixed-window defaults remain unc
 
 ## Rollback Plan
 
-Before implementation, create a timestamped snapshot under `backups/` containing
-every file the change will alter, including `transcribe_microphone.py`, project
-dependency configuration/lock files, and relevant README text. Include a
-`RESTORE.md` with exact copy-back commands and `uv sync` as the final restore
-step.
-
-If VAD cannot install, misidentifies church speech, adds unacceptable latency,
-or destabilizes fixed-window mode, stop the test, restore that snapshot, run
-`uv sync`, and continue with the known-good fixed pipeline. The test command is
-opt-in, but the snapshot protects against accidental changes to shared code and
-dependencies without relying on source control.
+Before implementation, confirm a clean committed Git baseline. If VAD cannot
+install, misidentifies church speech, adds unacceptable latency, or destabilizes
+fixed-window mode, stop the test, restore the known-good baseline with Git, run
+`uv sync`, and continue with the fixed pipeline. VAD remains opt-in, so omitting
+`--segmentation vad` immediately returns day-to-day use to the known-good mode.

@@ -138,6 +138,24 @@ uv run transcribe-microphone --window-seconds 5.5 --stride-seconds 4.5
 If Whisper cannot keep up, the command reports a backlog warning and discards
 older pending windows to remain close to live output.
 
+### Pause-based VAD experiment
+
+The fixed 5-second/every-4-seconds mode remains the baseline. To test local
+pause-based phrase boundaries instead, add `--segmentation vad`:
+
+```sh
+uv run transcribe-microphone --segmentation vad --output-format ndjson | uv run buffer-phrases | uv run translate-stream
+```
+
+VAD keeps capture continuous, waits for approximately 0.7 seconds of silence
+after speech, then sends the phrase to Whisper. It retains 0.3 seconds of
+pre-roll and forces a split after 10 seconds if someone speaks without pausing.
+Tune these with `--vad-silence-seconds`, `--vad-pre-roll-seconds`,
+`--vad-min-phrase-seconds`, `--vad-max-phrase-seconds`, and
+`--vad-aggressiveness 0` through `3`. Natural pauses improve sentence context
+but add the silence threshold to live delay; omit `--segmentation vad` to return
+to the fixed-window baseline.
+
 ## Streaming text translation
 
 `translate-stream` is the next independent stage: it reads one finalized
