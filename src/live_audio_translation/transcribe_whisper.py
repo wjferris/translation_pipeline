@@ -1,4 +1,9 @@
-"""Transcribe one local audio file using the installed Whisper CLI."""
+"""Run the locally installed Whisper CLI against one English audio file.
+
+This module is the shared local-ASR adapter used by both the file experiment
+and continuous microphone process. It honors ``WHISPER_MODEL_PATH`` and can
+terminate a running Whisper child process when live capture is stopped.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +49,11 @@ def transcribe(
     show_status: bool = True,
     cancel_event: threading.Event | None = None,
 ) -> str:
-    """Run Whisper and return its text-file transcript."""
+    """Run Whisper locally and return its plain-text transcript.
+
+    Status stays on standard error. ``cancel_event`` lets the microphone worker
+    interrupt the child process cleanly during shutdown.
+    """
     whisper_command = shutil.which("whisper")
     if whisper_command is None:
         raise RuntimeError("Whisper executable not found on PATH.")

@@ -1,4 +1,10 @@
-"""Continuously capture microphone audio into overlapping Whisper windows."""
+"""Capture local microphone audio and send final speech segments to Whisper.
+
+The default mode uses fixed overlapping windows. The opt-in VAD mode keeps
+capture continuous but segments on natural pauses before invoking Whisper.
+Completed English text is printed for people or emitted as NDJSON for the
+translation pipeline.
+"""
 
 from __future__ import annotations
 
@@ -127,7 +133,7 @@ def remove_overlap(previous: str, current: str) -> str:
 
 
 class WindowSegmenter:
-    """Turn continuous callback blocks into overlapping fixed-size windows."""
+    """Turn continuous callback blocks into overlapping fixed-size audio windows."""
 
     def __init__(
         self,
@@ -310,6 +316,7 @@ def transcribe_windows(
     language: str,
     output_format: str,
 ) -> None:
+    """Write queued audio to temporary WAV files and emit finalized transcripts."""
     previous = ""
     sequence = 0
     while not stop_event.is_set():
@@ -352,6 +359,7 @@ def transcribe_windows(
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    """Reject invalid fixed-window and VAD command-line combinations early."""
     if args.window_seconds <= 0:
         raise ValueError("--window-seconds must be greater than zero.")
     if args.stride_seconds <= 0:
@@ -375,6 +383,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Run microphone capture, segmentation, and local Whisper transcription."""
     args = parse_args()
     try:
         validate_args(args)

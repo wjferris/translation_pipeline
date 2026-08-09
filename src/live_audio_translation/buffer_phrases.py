@@ -1,4 +1,9 @@
-"""Buffer finalized ASR events into larger English phrases for translation."""
+"""Prepare finalized English ASR events for the local translation worker.
+
+The module is an NDJSON stdin/stdout filter. It joins short transcript events
+into punctuation-delimited phrases, keeps timing/source metadata, and flushes
+unfinished text after a bounded wait so live output does not stall.
+"""
 
 from __future__ import annotations
 
@@ -54,6 +59,8 @@ def trim_repeated_boundary(previous: str, current: str) -> str:
 
 
 class PhraseBuffer:
+    """Accumulate English events and emit translation-ready phrase events."""
+
     def __init__(self) -> None:
         self.text = ""
         self.source_ids: list[Any] = []
@@ -64,6 +71,7 @@ class PhraseBuffer:
         self.previous_input = ""
 
     def add(self, event: Mapping[str, Any], now: float) -> list[dict[str, Any]]:
+        """Append one finalized ASR event and release any complete sentence."""
         raw_input = event["text"].strip()
         incoming = trim_repeated_boundary(self.previous_input, raw_input)
         self.previous_input = raw_input
@@ -98,6 +106,7 @@ class PhraseBuffer:
         return [event]
 
     def flush(self) -> dict[str, Any] | None:
+        """Emit remaining unfinished text, typically at timeout or end of input."""
         if not self.text:
             return None
         event = self._event(self.text)
@@ -144,6 +153,7 @@ def valid_event(value: Any) -> dict[str, Any]:
 
 
 def run(max_wait_seconds: float, *, input_stream: TextIO = sys.stdin, output_stream: TextIO = sys.stdout, error_stream: TextIO = sys.stderr) -> None:
+    """Run the long-lived NDJSON phrase-buffer process until input closes."""
     lines: queue.Queue[object] = queue.Queue()
     threading.Thread(target=read_lines, args=(input_stream, lines), daemon=True).start()
     buffer = PhraseBuffer()

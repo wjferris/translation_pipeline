@@ -1,4 +1,9 @@
-"""Translate finalized English text events with a local Ollama model."""
+"""Translate finalized English NDJSON events using local Ollama inference.
+
+The process reads one event per stdin line and writes one Spanish event per
+stdout line. It deliberately keeps diagnostics on stderr so its output can be
+piped directly into a future text-to-speech stage.
+"""
 
 from __future__ import annotations
 
@@ -55,6 +60,7 @@ def validate_event(value: Any) -> dict[str, Any]:
 
 
 def translate(client: Client, model: str, text: str) -> str:
+    """Request a Spanish-only translation from the selected local Ollama model."""
     response = client.chat(
         model=model,
         messages=[{"role": "user", "content": PROMPT + text}],
@@ -74,6 +80,7 @@ def run(
     output_stream: TextIO = sys.stdout,
     error_stream: TextIO = sys.stderr,
 ) -> None:
+    """Run the long-lived ordered English-to-Spanish NDJSON worker."""
     for line_number, raw_line in enumerate(input_stream, start=1):
         if not raw_line.strip():
             continue
