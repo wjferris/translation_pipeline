@@ -156,6 +156,29 @@ Tune these with `--vad-silence-seconds`, `--vad-pre-roll-seconds`,
 but add the silence threshold to live delay; omit `--segmentation vad` to return
 to the fixed-window baseline.
 
+#### Live transcription switch reference
+
+| Switch | Default | Purpose |
+| --- | --- | --- |
+| `--segmentation fixed` | `fixed` | Use fixed overlapping Whisper windows. |
+| `--segmentation vad` | — | Use local pause-based phrase boundaries. |
+| `--window-seconds 5` | `5` | Fixed-window duration; applies in `fixed` mode. |
+| `--stride-seconds 4` | `4` | Time between fixed-window starts; use a smaller value than the window for overlap. |
+| `--vad-silence-seconds 0.45` | `0.7` | Silence required to finish a VAD phrase; lower values reduce delay but can split natural pauses. |
+| `--vad-pre-roll-seconds 0.3` | `0.3` | Audio retained immediately before VAD detects speech. |
+| `--vad-min-phrase-seconds 0.7` | `0.7` | Shortest detected phrase sent to Whisper. |
+| `--vad-max-phrase-seconds 10` | `10` | Forced split for continuous speech without a pause. |
+| `--vad-aggressiveness 0`–`3` | `2` | VAD sensitivity; begin with the default unless it misses quiet speech or reacts to noise. |
+| `--output-format ndjson` | `text` | Send machine-readable finalized English events to the translation pipeline. |
+| `--duration 6` | unlimited | Stop automatically after a short microphone test. |
+
+For the current preferred translation experiment, use Medium Whisper with VAD
+and a 0.45-second phrase-end pause:
+
+```sh
+uv run transcribe-microphone --segmentation vad --vad-silence-seconds 0.45 --output-format ndjson | uv run buffer-phrases | uv run translate-stream
+```
+
 ## Streaming text translation
 
 `translate-stream` is the next independent stage: it reads one finalized
