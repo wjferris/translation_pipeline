@@ -1,0 +1,19 @@
+# Local configuration and Python environments
+.env
+.venv/
+.uv-cache/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local recovery snapshots are redundant once this repository is pushed.
+backups/
+.codex/
+
+# macOS and editor files
+.DS_Store
+.vscode/
