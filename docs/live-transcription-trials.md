@@ -60,6 +60,14 @@ visible duplicate/overlap fragments were not observed. The pause-based latency
 felt natural and preferable to translating arbitrary short windows. Keep the
 fixed Medium 5/4 mode as a comparison fallback while more talks are evaluated.
 
+### Piper local-speech trial (2026-08-09)
+
+The Mexican-Spanish Piper voice was connected to the live VAD → Whisper →
+translation stream and played through local output. The first end-to-end run
+performed well enough to establish local Spanish speech as the next working
+baseline. Longer listener tests should still evaluate voice naturalness,
+listening fatigue, and terminology pronunciation before any Zoom routing.
+
 ## Known limitations
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.

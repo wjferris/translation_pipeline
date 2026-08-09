@@ -209,6 +209,36 @@ input line is reported and skipped; a local Ollama/model failure produces a JSON
 error event (retaining the input identifier and timing) so later input can keep
 flowing.
 
+## Local Piper Spanish speech
+
+`speak-stream` reads translated Spanish JSON events and plays them in order
+through the default local audio output device. It keeps Piper loaded for the
+whole process, avoiding per-phrase model startup delay.
+
+First download the Mexican-Spanish voice if it is not already in `models/piper`:
+
+```sh
+uv run python -m piper.download_voices --download-dir models/piper es_MX-claude-high
+```
+
+Test one Spanish phrase with local speakers or, preferably, headphones:
+
+```sh
+printf '%s\n' '{"id":"test-1","text":"Buenos días. Estamos agradecidos de estar con ustedes."}' | uv run speak-stream
+```
+
+Run the complete local Babel-fish experiment with headphones to prevent the
+Spanish output being captured again by the microphone:
+
+```sh
+uv run transcribe-microphone --segmentation vad --vad-silence-seconds 0.45 --output-format ndjson | uv run buffer-phrases | uv run translate-stream | uv run speak-stream
+```
+
+Use `--model path/to/voice.onnx` to choose another local Piper voice, or
+`--output-device NAME_OR_INDEX` to select a specific sounddevice output. This
+stage plays audio locally only; Zoom and virtual microphone routing are later
+work.
+
 ## Live microphone to Spanish text
 
 To run the two local stages together, use one shell pipeline:
