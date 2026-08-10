@@ -16,27 +16,50 @@ Recorded English speech
 
 The initial work deliberately evaluates general translation quality only. LDS-specific terminology, names, scripture references, glossaries, corpus retrieval, and model fine-tuning are later phases.
 
-## Prototype stack
+## Current local demo architecture
+
+The working prototype is a self-contained Mac demo. After the Python packages
+and model files are downloaded, every stage below runs locally; the browser
+connects only to `127.0.0.1` and no speech or text is sent to the internet.
 
 ```mermaid
 flowchart TB
-    A["English program audio<br/>from existing mixer / AV system"]
-    B["Audio input<br/>USB interface or network stream"]
-    C["English speech recognition<br/>Whisper or Voxtral"]
-    D["English text"]
-    E["Text translation<br/>NLLB-200"]
-    F["Spanish text"]
-    G["Spanish text-to-speech<br/>local TTS model"]
-    H["Spanish audio output<br/>network stream or virtual audio device"]
-    I["Existing OBS / AV infrastructure"]
-    J["Spanish listeners<br/>Zoom / broadcast distribution"]
+    Input["English program audio<br/>Wireless receiver, microphone, or Mac input"]
+    Speaker["Spanish-room speaker<br/>Separate physical room during demo"]
+    Browser["Full-screen local browser<br/>English and Spanish display<br/><code>http://127.0.0.1:8765</code>"]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    subgraph Mac["Local Mac — Python / uv project"]
+        Launcher["Demo launcher<br/><code>scripts/run-demo</code><br/>Zsh loads <code>.env</code> then runs <code>uv run demo</code>"]
+        Coordinator["Demo coordinator<br/><code>demo.py</code><br/>Python, local HTTP server, Server-Sent Events"]
+        Capture["Audio capture and segmentation<br/><code>sounddevice</code> + WebRTC VAD<br/><code>transcribe_microphone.py</code>"]
+        ASR["English speech recognition<br/>MacPorts <code>whisper.cpp</code><br/>local <code>medium.bin</code> model"]
+        Buffer["English phrase buffer<br/><code>buffer_phrases.py</code><br/>Python NDJSON sentence grouping"]
+        Translation["Spanish text translation<br/>local Ollama<br/><code>translategemma:4b</code>"]
+        TTS["Spanish speech synthesis and playback<br/>Piper <code>es_MX-claude-high</code><br/><code>sounddevice</code> output device"]
 
-    K["Linux appliance with NVIDIA GPU<br/>uses existing hardware"] -. accelerates .-> C
-    K -. accelerates .-> E
-    K -. accelerates .-> G
+        Launcher --> Coordinator
+        Input --> Capture --> ASR
+        ASR -->|English NDJSON| Coordinator
+        Coordinator -->|English NDJSON| Buffer
+        Buffer -->|completed English phrase| Translation
+        Translation -->|Spanish text| Coordinator
+        Coordinator -->|Spanish text| TTS
+    end
+
+    Coordinator -->|local SSE: English and Spanish events| Browser
+    TTS -->|selected Mac audio output| Speaker
 ```
+
+| Component | Technology | What it does |
+| --- | --- | --- |
+| Demo launcher | Zsh, `.env`, `uv` | Starts the demo from the project root and forwards any command-line switches to `demo`. |
+| Demo coordinator | Python `demo.py`, built-in `ThreadingHTTPServer`, Server-Sent Events | Starts the live workers, sends English and Spanish events to the display, and coordinates translation and speech. It binds the display to the local Mac only. |
+| Audio capture and pause detection | `sounddevice`, WebRTC VAD | Receives the English input continuously and identifies phrase boundaries using natural pauses. |
+| English ASR | MacPorts `whisper.cpp`, local Whisper `medium.bin` | Converts each completed English audio phrase into text. |
+| Phrase buffer | Python `buffer_phrases.py`, NDJSON | Holds unfinished ASR text briefly so the translator receives more complete sentences and fewer mid-sentence fragments. |
+| Text translation | Local Ollama, `translategemma:4b` | Translates completed English phrases into Spanish without calling a cloud service. |
+| Spanish speech | Piper `es_MX-claude-high`, `sounddevice` | Generates Mexican-Spanish speech and plays it sequentially through the selected Mac audio output. |
+| Bilingual display | Local browser, HTML/CSS/JavaScript, Server-Sent Events | Shows readable recent English and Spanish phrases in a full-screen two-column view for a non-technical audience. |
 
 ## Principles
 
@@ -238,6 +261,55 @@ Use `--model path/to/voice.onnx` to choose another local Piper voice, or
 `--output-device NAME_OR_INDEX` to select a specific sounddevice output. This
 stage plays audio locally only; Zoom and virtual microphone routing are later
 work.
+
+## Local browser demo
+
+`demo` is an optional, audience-friendly view of the existing local pipeline.
+It leaves the individual CLI commands above unchanged, but starts the
+microphone, phrase buffer, local TranslateGemma, and Piper stages together. A
+browser on the same Mac shows completed English transcripts on the left and
+Spanish translations on the right; Spanish is also spoken through the selected
+local audio output.
+
+```sh
+source .env
+uv sync
+uv run demo --output-device "NAME_OR_INDEX"
+```
+
+For convenience, the project includes a launcher that loads `.env` and can be
+started from any working directory:
+
+```sh
+./scripts/run-demo
+```
+
+Every option is passed directly to `demo`, so it can also select an output
+device or tune a component without editing the script:
+
+```sh
+./scripts/run-demo --output-device "USB Audio Device"
+./scripts/run-demo --vad-silence-seconds 0.35 --no-open-browser
+./scripts/run-demo --translation-model translategemma:4b
+```
+
+The command opens `http://127.0.0.1:8765` by default. Make that browser window
+full screen for the presentation. If the browser should not open automatically,
+use `--no-open-browser`; use `--port` to choose another local port.
+
+The demo defaults to the current VAD experiment settings: `--segmentation vad`
+and `--vad-silence-seconds 0.45`. It supports the same fixed-window/VAD tuning
+options as `transcribe-microphone`, plus `--translation-model`, `--piper-model`,
+and `--output-device`.
+
+The display server binds only to `127.0.0.1`, and all models run locally. Once
+dependencies and models are installed, the demo works without internet access.
+For a real-room test, route English input wirelessly into the Mac and select the
+separate-room Spanish speaker as `--output-device`; this avoids the Spanish
+audio feeding back into the input microphone. Press Ctrl-C in the launching
+terminal to stop all demo processes. If Piper is currently speaking, the demo
+finishes that phrase before returning to the shell; this is intentional so
+native audio resources can close safely.
 
 ## Live microphone to Spanish text
 

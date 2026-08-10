@@ -1,0 +1,23 @@
+#!/bin/zsh
+# Launch the local browser demo from any working directory.
+#
+# All arguments are passed through to `uv run demo`, for example:
+#   ./scripts/run-demo --output-device "USB Audio Device"
+#   ./scripts/run-demo --vad-silence-seconds 0.35 --no-open-browser
+
+set -euo pipefail
+
+PROJECT_DIR="${0:A:h:h}"
+ENV_FILE="$PROJECT_DIR/.env"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  print -u2 "Missing $ENV_FILE. Create it before running the local demo."
+  exit 2
+fi
+
+set -a
+source "$ENV_FILE"
+set +a
+
+cd "$PROJECT_DIR"
+exec uv run demo "$@"

@@ -18,6 +18,7 @@ transcribe-microphone = "live_audio_translation.transcribe_microphone:main"
 translate-stream = "live_audio_translation.translate_stream:main"
 buffer-phrases = "live_audio_translation.buffer_phrases:main"
 speak-stream = "live_audio_translation.speak_stream:main"
+demo = "live_audio_translation.demo:main"
 
 [build-system]
 requires = ["hatchling"]
