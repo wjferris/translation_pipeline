@@ -32,31 +32,105 @@ from live_audio_translation.transcribe_whisper import DEFAULT_MODEL_PATH as DEFA
 from live_audio_translation.translate_stream import DEFAULT_MODEL, translate
 
 
+RESOURCE_DIR = Path(__file__).resolve().parents[1] / "resources"
+FAVICON_PATH = RESOURCE_DIR / "images" / "babelfish_favicon.png"
+WEB_DIR = RESOURCE_DIR / "web"
+STATIC_ASSETS = {
+    "/": (WEB_DIR / "index.html", "text/html; charset=utf-8"),
+    "/index.html": (WEB_DIR / "index.html", "text/html; charset=utf-8"),
+    "/assets/demo.css": (WEB_DIR / "demo.css", "text/css; charset=utf-8"),
+    "/assets/demo.js": (WEB_DIR / "demo.js", "text/javascript; charset=utf-8"),
+    "/assets/babelfish_favicon.png": (FAVICON_PATH, "image/png"),
+}
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Live English → Spanish Translation</title>
+  <link rel="icon" type="image/png" href="/assets/babelfish_favicon.png">
   <style>
-    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #f4f8ff;
+      --muted: #b5c7dc;
+      --navy: #030b1d;
+      --panel: rgba(5, 22, 53, .78);
+      --cyan: #17e5f6;
+      --blue: #177cf7;
+      --violet: #a258ff;
+      --line: rgba(110, 192, 255, .22);
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #101419; color: #f7f8fa; }
-    header { height: 8vh; min-height: 52px; display: flex; align-items: center; justify-content: space-between; padding: 0 3vw; background: #17202a; border-bottom: 1px solid #36424e; }
-    h1 { margin: 0; font-size: clamp(1rem, 2vw, 1.55rem); letter-spacing: .02em; }
-    #status { color: #9fe6b8; font-size: clamp(.85rem, 1.4vw, 1.1rem); }
-    main { min-height: 92vh; display: grid; grid-template-columns: 1fr 1fr; }
-    section { padding: 4vh 4vw; overflow: hidden; }
-    #english { border-right: 2px solid #36424e; }
-    h2 { margin: 0 0 3vh; color: #b8c7d8; font-size: clamp(1.2rem, 2.5vw, 2rem); font-weight: 600; }
-    .history { display: flex; flex-direction: column; gap: 2.2vh; color: #b7c2cc; font-size: clamp(1.15rem, 2.35vw, 2.25rem); line-height: 1.35; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(70% 70% at 0% 35%, rgba(102, 34, 205, .28), transparent 62%),
+        radial-gradient(70% 78% at 100% 35%, rgba(0, 211, 236, .22), transparent 62%),
+        linear-gradient(135deg, #020614 0%, var(--navy) 55%, #04152c 100%);
+    }
+    header {
+      height: 9vh;
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 3vw;
+      background: linear-gradient(90deg, rgba(17, 8, 53, .88), rgba(3, 25, 57, .82));
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, .2);
+    }
+    .brand { display: flex; align-items: center; gap: .7rem; }
+    .brand img {
+      width: clamp(2.1rem, 4.4vh, 3.1rem);
+      height: clamp(2.1rem, 4.4vh, 3.1rem);
+      border-radius: 22%;
+      box-shadow: 0 0 18px rgba(22, 222, 250, .36);
+    }
+    h1 { margin: 0; font-size: clamp(1rem, 2vw, 1.55rem); letter-spacing: .03em; text-shadow: 0 0 16px rgba(61, 201, 255, .45); }
+    #status {
+      color: #c5fbff;
+      font-size: clamp(.82rem, 1.35vw, 1.05rem);
+      padding: .42rem .8rem;
+      border: 1px solid rgba(23, 229, 246, .32);
+      border-radius: 99px;
+      background: rgba(6, 32, 66, .68);
+      box-shadow: inset 0 0 12px rgba(23, 229, 246, .07);
+    }
+    main { min-height: 91vh; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+    section { padding: 4vh 4vw; overflow: hidden; background: var(--panel); }
+    #english { background: linear-gradient(145deg, rgba(31, 15, 76, .82), rgba(4, 20, 53, .88)); }
+    #spanish { background: linear-gradient(215deg, rgba(2, 54, 79, .74), rgba(4, 20, 53, .88)); }
+    h2 { margin: 0 0 3vh; color: var(--muted); font-size: clamp(1.2rem, 2.5vw, 2rem); font-weight: 600; letter-spacing: .02em; }
+    #english h2 { color: #d8c1ff; }
+    #spanish h2 { color: #baf8ff; }
+    .history { display: flex; flex-direction: column; gap: 2.2vh; color: #afc2d8; font-size: clamp(1.15rem, 2.35vw, 2.25rem); line-height: 1.35; }
     .history p { margin: 0; }
-    .history p:last-child { color: #fff; font-size: 1.14em; font-weight: 600; }
-    @media (max-width: 700px) { main { grid-template-columns: 1fr; } #english { border-right: 0; border-bottom: 2px solid #36424e; } }
+    .history p:last-child {
+      color: #fff;
+      font-size: 1.14em;
+      font-weight: 600;
+      padding-left: 1rem;
+      border-left: 3px solid var(--cyan);
+      text-shadow: 0 0 18px rgba(73, 214, 255, .2);
+    }
+    #english .history p:last-child { border-color: var(--violet); }
+    @media (max-width: 700px) {
+      header { height: auto; min-height: 58px; }
+      main { grid-template-columns: 1fr; }
+      section { min-height: 46vh; }
+    }
   </style>
 </head>
 <body>
-  <header><h1>Live Translation</h1><div id="status">Starting…</div></header>
+  <header>
+    <div class="brand"><img src="/assets/babelfish_favicon.png" alt="Babel fish"><h1>Live Translation</h1></div>
+    <div id="status">Starting…</div>
+  </header>
   <main>
     <section id="english"><h2>English — Live Transcript</h2><div class="history"></div></section>
     <section id="spanish"><h2>Español — Traducción en vivo</h2><div class="history"></div></section>
@@ -129,11 +203,14 @@ def make_handler(state: DemoState) -> type[BaseHTTPRequestHandler]:
 
     class DemoHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-            if self.path in ("/", "/index.html"):
-                body = PAGE.encode("utf-8")
+            asset = STATIC_ASSETS.get(self.path)
+            if asset is not None:
+                asset_path, content_type = asset
+                body = asset_path.read_bytes()
                 self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 self.wfile.write(body)
                 return

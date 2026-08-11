@@ -23,19 +23,20 @@ and model files are downloaded, every stage below runs locally; the browser
 connects only to `127.0.0.1` and no speech or text is sent to the internet.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#030b1d', 'primaryColor': '#08234a', 'primaryTextColor': '#f4f8ff', 'primaryBorderColor': '#17e5f6', 'lineColor': '#5bbbed', 'secondaryColor': '#241052', 'tertiaryColor': '#06384f', 'clusterBkg': '#071a38', 'clusterBorder': '#4d89d1', 'fontFamily': 'system-ui'}}}%%
 flowchart TB
-    Input["English program audio<br/>Wireless receiver, microphone, or Mac input"]
-    Speaker["Spanish-room speaker<br/>Separate physical room during demo"]
-    Browser["Full-screen local browser<br/>English and Spanish display<br/><code>http://127.0.0.1:8765</code>"]
+    Input("English program audio<br/>Wireless receiver, microphone, or Mac input")
+    Speaker("Spanish-room speaker<br/>Separate physical room during demo")
+    Browser("Full-screen local browser<br/>English and Spanish display<br/><code>http://127.0.0.1:8765</code>")
 
     subgraph Mac["Local Mac — Python / uv project"]
-        Launcher["Demo launcher<br/><code>scripts/run-demo</code><br/>Zsh loads <code>.env</code> then runs <code>uv run demo</code>"]
-        Coordinator["Demo coordinator<br/><code>demo.py</code><br/>Python, local HTTP server, Server-Sent Events"]
-        Capture["Audio capture and segmentation<br/><code>sounddevice</code> + WebRTC VAD<br/><code>transcribe_microphone.py</code>"]
-        ASR["English speech recognition<br/>MacPorts <code>whisper.cpp</code><br/>local <code>medium.bin</code> model"]
-        Buffer["English phrase buffer<br/><code>buffer_phrases.py</code><br/>Python NDJSON sentence grouping"]
-        Translation["Spanish text translation<br/>local Ollama<br/><code>translategemma:4b</code>"]
-        TTS["Spanish speech synthesis and playback<br/>Piper <code>es_MX-claude-high</code><br/><code>sounddevice</code> output device"]
+        Launcher("Demo launcher<br/><code>scripts/run-demo</code><br/>Zsh loads <code>.env</code> then runs <code>uv run demo</code>")
+        Coordinator("Demo coordinator<br/><code>demo.py</code><br/>Python, local HTTP server, Server-Sent Events")
+        Capture("Audio capture and segmentation<br/><code>sounddevice</code> + WebRTC VAD<br/><code>transcribe_microphone.py</code>")
+        ASR("English speech recognition<br/>MacPorts <code>whisper.cpp</code><br/>local <code>medium.bin</code> model")
+        Buffer("English phrase buffer<br/><code>buffer_phrases.py</code><br/>Python NDJSON sentence grouping")
+        Translation("Spanish text translation<br/>local Ollama<br/><code>translategemma:4b</code>")
+        TTS("Spanish speech synthesis and playback<br/>Piper <code>es_MX-claude-high</code><br/><code>sounddevice</code> output device")
 
         Launcher --> Coordinator
         Input --> Capture --> ASR
@@ -48,6 +49,16 @@ flowchart TB
 
     Coordinator -->|local SSE: English and Spanish events| Browser
     TTS -->|selected Mac audio output| Speaker
+
+    classDef input fill:#1b1047,stroke:#a258ff,color:#f4f8ff,stroke-width:2px
+    classDef launcher fill:#1d1350,stroke:#a258ff,color:#f4f8ff,stroke-width:2px
+    classDef core fill:#08234a,stroke:#17e5f6,color:#f4f8ff,stroke-width:2px
+    classDef output fill:#06384f,stroke:#17e5f6,color:#f4f8ff,stroke-width:2px
+    class Input input
+    class Launcher launcher
+    class Capture,ASR,Buffer,Coordinator core
+    class Translation,TTS,Browser,Speaker output
+    style Mac fill:#04152c,stroke:#5bbbed,stroke-width:2px,color:#f4f8ff
 ```
 
 | Component | Technology | What it does |
@@ -310,6 +321,18 @@ audio feeding back into the input microphone. Press Ctrl-C in the launching
 terminal to stop all demo processes. If Piper is currently speaking, the demo
 finishes that phrase before returning to the shell; this is intentional so
 native audio resources can close safely.
+
+### Editing the demo display
+
+The local browser UI is deliberately plain HTML, CSS, and JavaScript. Edit these
+files independently, then reload the demo page in the browser:
+
+- `src/resources/web/index.html` — page structure and labels
+- `src/resources/web/demo.css` — layout, colors, typography, and responsive styling
+- `src/resources/web/demo.js` — browser event handling and visible transcript history
+
+`demo.py` only serves those fixed local files and provides the live `/events`
+stream; it does not require a web framework or a frontend build step.
 
 ## Live microphone to Spanish text
 
