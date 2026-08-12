@@ -32,9 +32,11 @@ Babelfish Demo
 
 The translation and Piper workers remain threads of `Babelfish Demo`, because they deliberately share the loaded Piper model and coordinator state. They do not need separate OS processes.
 
-### Use a common process group or session for lifecycle control
+### Use a launcher-owned session for lifecycle control
 
-The demo launcher/coordinator should establish a new process group or session before starting its children. The exact macOS-compatible mechanism will be chosen during implementation. The group supplements—not replaces—the current explicit graceful shutdown: stop new input, drain active Piper speech, join workers, then exit.
+`scripts/run-demo` starts a small project-owned service launcher in the background with standard input disconnected and output redirected to a per-user temporary log. That launcher calls `setsid()` before entering the demo coordinator, making the coordinator both session leader and process-group leader; its direct workers inherit that isolated group. It records the coordinator PID in a per-user temporary PID file only after the session has been created.
+
+`scripts/stop-demo` invokes a project-owned stop helper that validates the PID still names a BabelFish session leader, then sends `SIGINT` to the complete process group. This preserves the coordinator's existing graceful shutdown path: stop new input, finish active Piper playback, join workers, then exit. It never sends a group signal to the launch terminal's process group.
 
 ### Treat process-title display as best effort
 
@@ -48,6 +50,7 @@ macOS tools can differ in whether they show an executable name, command line, or
 
 - [Activity Monitor does not display a mutable Python title] → Keep operator documentation based on parent PID/process group and terminal command line rather than relying exclusively on a visual label.
 - [Process-group changes interfere with Ctrl-C] → Test Ctrl-C and child cleanup explicitly on macOS before treating the feature as complete.
+- [A stale PID file targets an unrelated reused PID] → Validate that the PID is still a session leader and only signal its matching process group; remove stale files without signalling.
 - [A title helper adds unnecessary packaging complexity] → Prefer a minimal, well-supported dependency or a no-dependency command-line labeling technique; omit cosmetic title changes if they are unreliable.
 
 ## Validation Plan

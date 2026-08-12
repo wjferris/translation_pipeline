@@ -27,6 +27,7 @@ from typing import Any
 from ollama import Client
 from piper.voice import PiperVoice
 
+from live_audio_translation.process_identity import PROCESS_TITLE_ENV, set_demo_process_title
 from live_audio_translation.speak_stream import DEFAULT_MODEL_PATH, play_text
 from live_audio_translation.transcribe_whisper import DEFAULT_MODEL_PATH as DEFAULT_WHISPER_MODEL
 from live_audio_translation.translate_stream import DEFAULT_MODEL, translate
@@ -344,9 +345,11 @@ class DemoPipeline:
         self.buffer = subprocess.Popen(
             [sys.executable, "-m", "live_audio_translation.buffer_phrases", "--max-wait-seconds", str(self.args.max_wait_seconds)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+            env={**os.environ, PROCESS_TITLE_ENV: "BabelFish Phrase Buffer"},
         )
         self.microphone = subprocess.Popen(
             microphone_command(self.args), stdout=subprocess.PIPE, text=True, bufsize=1,
+            env={**os.environ, PROCESS_TITLE_ENV: "BabelFish ASR"},
         )
         self.english_thread = threading.Thread(target=self._forward_english, name="demo-english")
         self.spanish_thread = threading.Thread(target=self._translate_and_speak, name="demo-spanish")
@@ -416,6 +419,7 @@ class DemoPipeline:
 
 def main() -> None:
     """Start the fully local browser demo and stop it cleanly on Ctrl-C."""
+    set_demo_process_title("BabelFish Demo")
     args = parse_args()
     try:
         validate_args(args)
@@ -438,6 +442,11 @@ def main() -> None:
         pipeline.start()
         state.publish("status", "Listening…")
         print(f"Local demo running at {url}. Press Ctrl-C to stop.", file=sys.stderr)
+        print(
+            f"BabelFish session and process group: {os.getpgrp()} (demo PID {os.getpid()}; "
+            "ASR and phrase buffer inherit this isolated group).",
+            file=sys.stderr,
+        )
         if not args.no_open_browser:
             webbrowser.open(url)
         server.serve_forever()

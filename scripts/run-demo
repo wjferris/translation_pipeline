@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Launch the local browser demo from any working directory.
+# Launch the local browser demo in the background from any working directory.
 #
 # All arguments are passed through to `uv run demo`, for example:
 #   ./scripts/run-demo --output-device "USB Audio Device"
@@ -9,6 +9,9 @@ set -euo pipefail
 
 PROJECT_DIR="${0:A:h:h}"
 ENV_FILE="$PROJECT_DIR/.env"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+PID_FILE="$RUNTIME_DIR/babelfish-demo-${UID}.pid"
+LOG_FILE="$RUNTIME_DIR/babelfish-demo-${UID}.log"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   print -u2 "Missing $ENV_FILE. Create it before running the local demo."
@@ -20,4 +23,30 @@ source "$ENV_FILE"
 set +a
 
 cd "$PROJECT_DIR"
-exec uv run demo "$@"
+export BABELFISH_DEMO_PID_FILE="$PID_FILE"
+
+if [[ -f "$PID_FILE" ]]; then
+  RUNNING_PID="$(<"$PID_FILE")"
+  if kill -0 "$RUNNING_PID" 2>/dev/null; then
+    print -u2 "BabelFish demo is already running (PID $RUNNING_PID). Use scripts/stop-demo first."
+    exit 1
+  fi
+  rm -f "$PID_FILE"
+fi
+
+nohup uv run python -m live_audio_translation.demo_service "$@" \
+  </dev/null >>"$LOG_FILE" 2>&1 &
+
+for _ in {1..30}; do
+  if [[ -f "$PID_FILE" ]]; then
+    RUNNING_PID="$(<"$PID_FILE")"
+    print "BabelFish demo started in the background (PID $RUNNING_PID)."
+    print "Log: $LOG_FILE"
+    print "Stop it with: $PROJECT_DIR/scripts/stop-demo"
+    exit 0
+  fi
+  sleep 0.1
+done
+
+print -u2 "BabelFish demo did not start. Check $LOG_FILE."
+exit 1

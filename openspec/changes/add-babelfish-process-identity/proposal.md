@@ -7,6 +7,7 @@ The local demo is intentionally composed of a coordinator and focused worker pro
 - Give the demo coordinator and its child workers recognizable BabelFish role names where the operating system supports process titles.
 - Start all demo subprocesses in a common process group/session owned by the BabelFish demo launcher.
 - Report the process identity/group to the operator at startup when useful.
+- Start the demo in the background through the launcher and provide a companion command that safely stops its isolated process group.
 
 ## Capabilities
 

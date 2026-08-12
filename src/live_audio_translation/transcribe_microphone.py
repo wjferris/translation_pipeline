@@ -25,6 +25,7 @@ import sounddevice as sd
 import soundfile as sf
 import webrtcvad
 
+from live_audio_translation.process_identity import set_demo_process_title
 from live_audio_translation.transcribe_whisper import (
     TranscriptionCancelled,
     transcribe,
@@ -384,6 +385,7 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Run microphone capture, segmentation, and local Whisper transcription."""
+    set_demo_process_title()
     args = parse_args()
     try:
         validate_args(args)

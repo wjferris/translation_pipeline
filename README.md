@@ -295,6 +295,13 @@ started from any working directory:
 ./scripts/run-demo
 ```
 
+The launcher returns once the demo is running in the background. Stop that
+session cleanly with:
+
+```sh
+./scripts/stop-demo
+```
+
 Every option is passed directly to `demo`, so it can also select an output
 device or tune a component without editing the script:
 
@@ -318,9 +325,30 @@ dependencies and models are installed, the demo works without internet access.
 For a real-room test, route English input wirelessly into the Mac and select the
 separate-room Spanish speaker as `--output-device`; this avoids the Spanish
 audio feeding back into the input microphone. Press Ctrl-C in the launching
-terminal to stop all demo processes. If Piper is currently speaking, the demo
-finishes that phrase before returning to the shell; this is intentional so
-native audio resources can close safely.
+terminal when running `uv run demo` directly, or run `./scripts/stop-demo` for
+a backgrounded `scripts/run-demo` session. If Piper is currently speaking, the
+demo finishes that phrase before exiting; this is intentional so native audio
+resources can close safely.
+
+### Inspecting demo processes
+
+While demo mode is running, the coordinator and its two direct worker processes
+appear as `BabelFish Demo`, `BabelFish ASR`, and `BabelFish Phrase Buffer` in
+macOS process listings where mutable titles are shown. They use the coordinator's
+isolated session/process group, so `scripts/stop-demo` can stop the complete
+demo without affecting the launch terminal. The coordinator prints its PID and
+process-group ID at startup.
+
+To inspect the running hierarchy from another terminal, use:
+
+```sh
+ps -axo pid,ppid,pgid,command | grep -i babelfish
+```
+
+In Activity Monitor, search for `BabelFish`; process-title display can vary by
+macOS view, so use the PID and process-group diagnostic from the launch terminal
+if the role label is not shown. If a demo is interrupted unexpectedly, confirm
+that this command returns no BabelFish workers before starting another run.
 
 ### Editing the demo display
 

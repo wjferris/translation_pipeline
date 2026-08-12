@@ -12,13 +12,20 @@ The demo mode SHALL identify its coordinator and demo-launched worker roles as B
 
 ### Requirement: Common demo lifecycle group
 
-The demo coordinator and its demo-launched child processes SHALL belong to a common local process group or session with an inspectable lifecycle relationship.
+The demo coordinator and its demo-launched child processes SHALL belong to an isolated local session and process group with an inspectable lifecycle relationship. The normal demo launcher SHALL return after starting that background session and SHALL record the session leader PID for a companion stop command.
 
 #### Scenario: Stop a running demo
 
 - **WHEN** the operator stops demo mode
-- **THEN** the common lifecycle relationship assists cleanup of its child workers
+- **THEN** the companion stop command sends a graceful interrupt to the isolated demo process group
 - **AND** the existing graceful Piper shutdown behavior remains in effect.
+
+#### Scenario: Start and stop from launcher commands
+
+- **WHEN** an operator runs `scripts/run-demo`
+- **THEN** the command starts the isolated BabelFish demo session in the background and returns control to the shell
+- **WHEN** the operator runs `scripts/stop-demo`
+- **THEN** the system requests graceful shutdown of that demo session without signalling the operator's shell.
 
 ### Requirement: Preserve standalone CLI operation
 

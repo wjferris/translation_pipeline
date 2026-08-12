@@ -17,6 +17,8 @@ import time
 from collections.abc import Mapping
 from typing import Any, TextIO
 
+from live_audio_translation.process_identity import set_demo_process_title
+
 
 SENTENCE_END = re.compile(r"[.!?][\"')\]]*")
 WORD = re.compile(r"\S+")
@@ -185,6 +187,7 @@ def run(max_wait_seconds: float, *, input_stream: TextIO = sys.stdin, output_str
 
 
 def main() -> None:
+    set_demo_process_title()
     args = parse_args()
     if args.max_wait_seconds <= 0:
         print("--max-wait-seconds must be greater than zero.", file=sys.stderr)

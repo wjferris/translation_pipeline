@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Gracefully stop the background BabelFish demo started by scripts/run-demo.
+
+set -euo pipefail
+
+PROJECT_DIR="${0:A:h:h}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+export BABELFISH_DEMO_PID_FILE="$RUNTIME_DIR/babelfish-demo-${UID}.pid"
+
+cd "$PROJECT_DIR"
+exec uv run python -m live_audio_translation.stop_demo
