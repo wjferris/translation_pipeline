@@ -181,14 +181,28 @@ pause-based phrase boundaries instead, add `--segmentation vad`:
 uv run transcribe-microphone --segmentation vad --output-format ndjson | uv run buffer-phrases | uv run translate-stream
 ```
 
-VAD keeps capture continuous, waits for approximately 0.7 seconds of silence
-after speech, then sends the phrase to Whisper. It retains 0.3 seconds of
-pre-roll and forces a split after 10 seconds if someone speaks without pausing.
-Tune these with `--vad-silence-seconds`, `--vad-pre-roll-seconds`,
+The default VAD backend is local Python/WebRTC VAD. It keeps capture continuous,
+waits for approximately 0.7 seconds of silence after speech, then sends the
+phrase to Whisper. It retains 0.3 seconds of pre-roll and forces a split after
+10 seconds if someone speaks without pausing. Tune it with
+`--vad-silence-seconds`, `--vad-pre-roll-seconds`,
 `--vad-min-phrase-seconds`, `--vad-max-phrase-seconds`, and
-`--vad-aggressiveness 0` through `3`. Natural pauses improve sentence context
-but add the silence threshold to live delay; omit `--segmentation vad` to return
-to the fixed-window baseline.
+`--vad-aggressiveness 0` through `3`.
+
+To compare Whisper's integrated local Silero VAD, use:
+
+```sh
+uv run transcribe-microphone --segmentation vad --vad-backend silero --output-format ndjson | uv run buffer-phrases | uv run translate-stream
+```
+
+Silero runs inside `whisper.cpp` for each capture window. The worker uses
+Whisper's full JSON token timing offsets to retain only the words that extend
+past the previous overlapping window, while retaining boundary context for recognition.
+Its phrase timing will differ from the Python/WebRTC pause detector. It requires a recent
+`whisper.cpp` CLI exposing `--vad` and `--vad-model`, plus a local GGML Silero
+model. The launcher discovers `ggml-silero-v6.2.0.bin` beside a source-built
+`whisper-cli`; override that location with `--silero-vad-model PATH` or
+`SILERO_VAD_MODEL_PATH`.
 
 #### Live transcription switch reference
 
@@ -196,6 +210,9 @@ to the fixed-window baseline.
 | --- | --- | --- |
 | `--segmentation fixed` | `fixed` | Use fixed overlapping Whisper windows. |
 | `--segmentation vad` | — | Use local pause-based phrase boundaries. |
+| `--vad-backend webrtc` | `webrtc` | Use the existing Python/WebRTC pause detector. |
+| `--vad-backend silero` | — | Use Whisper-integrated Silero VAD; requires a compatible local Whisper CLI and Silero model. |
+| `--silero-vad-model PATH` | discovered | Override the GGML Silero model location. |
 | `--window-seconds 5` | `5` | Fixed-window duration; applies in `fixed` mode. |
 | `--stride-seconds 4` | `4` | Time between fixed-window starts; use a smaller value than the window for overlap. |
 | `--vad-silence-seconds 0.45` | `0.7` | Silence required to finish a VAD phrase; lower values reduce delay but can split natural pauses. |
@@ -308,6 +325,7 @@ device or tune a component without editing the script:
 ```sh
 ./scripts/run-demo --output-device "USB Audio Device"
 ./scripts/run-demo --vad-silence-seconds 0.35 --no-open-browser
+./scripts/run-demo --vad-backend silero
 ./scripts/run-demo --translation-model translategemma:4b
 ```
 
@@ -316,9 +334,10 @@ full screen for the presentation. If the browser should not open automatically,
 use `--no-open-browser`; use `--port` to choose another local port.
 
 The demo defaults to the current VAD experiment settings: `--segmentation vad`
-and `--vad-silence-seconds 0.45`. It supports the same fixed-window/VAD tuning
-options as `transcribe-microphone`, plus `--translation-model`, `--piper-model`,
-and `--output-device`.
+with the Python/WebRTC backend and `--vad-silence-seconds 0.45`. Add
+`--vad-backend silero` to compare Whisper-integrated Silero VAD. It supports the
+same fixed-window/VAD tuning options as `transcribe-microphone`, plus
+`--translation-model`, `--piper-model`, and `--output-device`.
 
 The display server binds only to `127.0.0.1`, and all models run locally. Once
 dependencies and models are installed, the demo works without internet access.

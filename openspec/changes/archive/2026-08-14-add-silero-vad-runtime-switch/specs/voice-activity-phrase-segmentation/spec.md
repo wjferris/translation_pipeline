@@ -1,8 +1,5 @@
-# voice-activity-phrase-segmentation Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-vad-phrase-segmentation. Update Purpose after archive.
-## Requirements
 ### Requirement: Segment continuous audio on local voice activity
 The system SHALL provide a local VAD segmentation mode that converts continuous 16 kHz mono microphone audio into bounded phrase audio for local Whisper transcription without uploading audio. It SHALL support the selected local VAD backend while retaining WebRTC as the default backend.
 

@@ -29,7 +29,10 @@ from piper.voice import PiperVoice
 
 from live_audio_translation.process_identity import PROCESS_TITLE_ENV, set_demo_process_title
 from live_audio_translation.speak_stream import DEFAULT_MODEL_PATH, play_text
-from live_audio_translation.transcribe_whisper import DEFAULT_MODEL_PATH as DEFAULT_WHISPER_MODEL
+from live_audio_translation.transcribe_whisper import (
+    default_whisper_model,
+    validate_silero_vad,
+)
 from live_audio_translation.translate_stream import DEFAULT_MODEL, translate
 
 
@@ -267,6 +270,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--segmentation", choices=("fixed", "vad"), default="vad", help="ASR segmentation method (default: vad)."
     )
+    parser.add_argument(
+        "--vad-backend", choices=("webrtc", "silero"), default="webrtc",
+        help="Local VAD backend for --segmentation vad (default: webrtc).",
+    )
+    parser.add_argument(
+        "--silero-vad-model", type=Path,
+        help="Path to the whisper.cpp GGML Silero VAD model.",
+    )
     parser.add_argument("--window-seconds", type=float, default=5.0, help="Fixed-window duration (default: 5).")
     parser.add_argument("--stride-seconds", type=float, default=4.0, help="Fixed-window stride (default: 4).")
     parser.add_argument("--vad-silence-seconds", type=float, default=0.45, help="VAD phrase-end silence (default: 0.45).")
@@ -287,11 +298,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--port must be between 1 and 65535.")
     if not args.piper_model.is_file():
         raise ValueError(f"Piper voice model not found: {args.piper_model}")
-    whisper_model = Path(os.environ.get("WHISPER_MODEL_PATH", DEFAULT_WHISPER_MODEL))
+    whisper_model = Path(os.environ.get("WHISPER_MODEL_PATH", default_whisper_model()))
     if not whisper_model.is_file():
         raise ValueError(f"Whisper model file not found: {whisper_model}")
     if shutil.which("whisper") is None:
         raise ValueError("Whisper executable not found on PATH.")
+    if args.segmentation != "vad" and args.vad_backend != "webrtc":
+        raise ValueError("--vad-backend is only valid with --segmentation vad.")
+    if args.segmentation == "vad" and args.vad_backend == "silero":
+        validate_silero_vad(args.silero_vad_model)
     if args.max_wait_seconds <= 0:
         raise ValueError("--max-wait-seconds must be greater than zero.")
 
@@ -305,13 +320,17 @@ def microphone_command(args: argparse.Namespace) -> list[str]:
         "--output-format", "ndjson",
     ]
     if args.segmentation == "vad":
-        command.extend([
-            "--vad-silence-seconds", str(args.vad_silence_seconds),
-            "--vad-aggressiveness", str(args.vad_aggressiveness),
-            "--vad-pre-roll-seconds", str(args.vad_pre_roll_seconds),
-            "--vad-min-phrase-seconds", str(args.vad_min_phrase_seconds),
-            "--vad-max-phrase-seconds", str(args.vad_max_phrase_seconds),
-        ])
+        command.extend(["--vad-backend", args.vad_backend])
+        if args.vad_backend == "webrtc":
+            command.extend([
+                "--vad-silence-seconds", str(args.vad_silence_seconds),
+                "--vad-aggressiveness", str(args.vad_aggressiveness),
+                "--vad-pre-roll-seconds", str(args.vad_pre_roll_seconds),
+                "--vad-min-phrase-seconds", str(args.vad_min_phrase_seconds),
+                "--vad-max-phrase-seconds", str(args.vad_max_phrase_seconds),
+            ])
+        elif args.silero_vad_model is not None:
+            command.extend(["--silero-vad-model", str(args.silero_vad_model)])
     else:
         command.extend(["--window-seconds", str(args.window_seconds), "--stride-seconds", str(args.stride_seconds)])
     return command

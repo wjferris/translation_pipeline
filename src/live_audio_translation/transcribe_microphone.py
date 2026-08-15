@@ -27,8 +27,12 @@ import webrtcvad
 
 from live_audio_translation.process_identity import set_demo_process_title
 from live_audio_translation.transcribe_whisper import (
+    TranscriptSegment,
+    TranscriptToken,
     TranscriptionCancelled,
     transcribe,
+    transcribe_timed,
+    validate_silero_vad,
 )
 
 
@@ -78,6 +82,17 @@ def parse_args() -> argparse.Namespace:
         help="Audio segmentation method (default: fixed).",
     )
     parser.add_argument(
+        "--vad-backend",
+        choices=("webrtc", "silero"),
+        default="webrtc",
+        help="Local VAD backend for --segmentation vad (default: webrtc).",
+    )
+    parser.add_argument(
+        "--silero-vad-model",
+        type=Path,
+        help="Path to the whisper.cpp GGML Silero VAD model (default: discover beside whisper).",
+    )
+    parser.add_argument(
         "--vad-aggressiveness",
         type=int,
         default=2,
@@ -120,17 +135,50 @@ def normalize_word(word: str) -> str:
     return re.sub(r"[^\w']", "", word).lower()
 
 
-def remove_overlap(previous: str, current: str) -> str:
-    """Remove a conservative multiword suffix/prefix overlap from current."""
+def remove_overlap(previous: str, current: str, *, trim_single_sentence_word: bool = False) -> str:
+    """Remove a conservative exact suffix/prefix overlap from current text."""
     previous_words = previous.split()
     current_words = current.split()
     limit = min(len(previous_words), len(current_words), 20)
-    for count in range(limit, 1, -1):
+    minimum = 1 if trim_single_sentence_word else 2
+    for count in range(limit, minimum - 1, -1):
         prior = [normalize_word(word) for word in previous_words[-count:]]
         upcoming = [normalize_word(word) for word in current_words[:count]]
-        if prior == upcoming and all(prior):
+        sentence_boundary = count > 1 or previous_words[-1].endswith((".", "!", "?"))
+        if prior == upcoming and all(prior) and sentence_boundary:
             return " ".join(current_words[count:])
     return current
+
+
+def new_timed_segments(
+    segments: list[TranscriptSegment], window_start_ms: int, covered_until_ms: int
+) -> list[TranscriptSegment]:
+    """Keep the timed words that extend past earlier capture windows."""
+    retained: list[TranscriptSegment] = []
+    for segment in segments:
+        timed_tokens = tuple(
+            TranscriptToken(
+                token.text, window_start_ms + token.start_ms, window_start_ms + token.end_ms
+            )
+            for token in segment.tokens
+            if window_start_ms + token.end_ms > covered_until_ms
+        )
+        if timed_tokens:
+            retained.append(
+                TranscriptSegment(
+                    "".join(token.text for token in timed_tokens).strip(),
+                    timed_tokens[0].start_ms,
+                    timed_tokens[-1].end_ms,
+                    timed_tokens,
+                )
+            )
+        elif not segment.tokens and window_start_ms + segment.end_ms > covered_until_ms:
+            retained.append(
+                TranscriptSegment(
+                    segment.text, window_start_ms + segment.start_ms, window_start_ms + segment.end_ms
+                )
+            )
+    return retained
 
 
 class WindowSegmenter:
@@ -316,10 +364,12 @@ def transcribe_windows(
     stop_event: threading.Event,
     language: str,
     output_format: str,
+    silero_vad_model: Path | None = None,
 ) -> None:
     """Write queued audio to temporary WAV files and emit finalized transcripts."""
     previous = ""
     sequence = 0
+    silero_covered_until_ms = 0
     while not stop_event.is_set():
         try:
             window = windows.get(timeout=0.1)
@@ -329,22 +379,35 @@ def transcribe_windows(
             window_path = Path(temp_file.name)
         try:
             sf.write(window_path, window.audio, SAMPLE_RATE)
-            transcript = transcribe(
-                window_path,
-                language,
-                show_status=False,
-                cancel_event=stop_event,
-            )
+            event_start_ms, event_end_ms = window.start_ms, window.end_ms
+            if silero_vad_model is not None:
+                segments = new_timed_segments(
+                    transcribe_timed(
+                        window_path, language, cancel_event=stop_event, silero_vad_model=silero_vad_model
+                    ),
+                    window.start_ms,
+                    silero_covered_until_ms,
+                )
+                silero_covered_until_ms = max(silero_covered_until_ms, window.end_ms)
+                transcript = " ".join(segment.text for segment in segments)
+                if segments:
+                    event_start_ms, event_end_ms = segments[0].start_ms, segments[-1].end_ms
+            else:
+                transcript = transcribe(
+                    window_path, language, show_status=False, cancel_event=stop_event
+                )
             if transcript:
-                new_text = remove_overlap(previous, transcript)
+                new_text = remove_overlap(
+                    previous, transcript, trim_single_sentence_word=silero_vad_model is not None
+                )
                 if new_text:
                     sequence += 1
                     if output_format == "ndjson":
                         event = {
                             "id": f"segment-{sequence}",
                             "text": new_text,
-                            "start_ms": window.start_ms,
-                            "end_ms": window.end_ms,
+                            "start_ms": event_start_ms,
+                            "end_ms": event_end_ms,
                         }
                         print(json.dumps(event, ensure_ascii=False), flush=True)
                         print(new_text, file=sys.stderr, flush=True)
@@ -369,6 +432,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stride-seconds cannot exceed --window-seconds.")
     if args.duration is not None and args.duration <= 0:
         raise ValueError("--duration must be greater than zero.")
+    if args.segmentation != "vad" and args.vad_backend != "webrtc":
+        raise ValueError("--vad-backend is only valid with --segmentation vad.")
     if not 0 <= args.vad_aggressiveness <= 3:
         raise ValueError("--vad-aggressiveness must be between 0 and 3.")
     for option in (
@@ -389,6 +454,11 @@ def main() -> None:
     args = parse_args()
     try:
         validate_args(args)
+        silero_vad_model = (
+            validate_silero_vad(args.silero_vad_model)
+            if args.segmentation == "vad" and args.vad_backend == "silero"
+            else None
+        )
     except ValueError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(2) from exc
@@ -397,7 +467,7 @@ def main() -> None:
     windows: queue.Queue[AudioWindow] = queue.Queue(maxsize=WINDOW_QUEUE_SIZE)
     warnings: queue.Queue[str] = queue.Queue()
     stop_event = threading.Event()
-    if args.segmentation == "vad":
+    if args.segmentation == "vad" and args.vad_backend == "webrtc":
         segmenter = VADSegmenter(
             blocks,
             windows,
@@ -410,9 +480,18 @@ def main() -> None:
             args.vad_max_phrase_seconds,
         )
         listening_message = (
-            "Listening continuously to the default microphone with local VAD "
+            "Listening continuously to the default microphone with local WebRTC VAD "
             f"phrases ending after {args.vad_silence_seconds:g} seconds of silence "
             f"or {args.vad_max_phrase_seconds:g} seconds maximum. Press Ctrl-C to stop."
+        )
+    elif args.segmentation == "vad":
+        segmenter = WindowSegmenter(
+            blocks, windows, warnings, stop_event, args.window_seconds, args.stride_seconds
+        )
+        listening_message = (
+            "Listening continuously with Whisper-integrated Silero VAD "
+            f"in {args.window_seconds:g}-second windows every {args.stride_seconds:g} seconds. "
+            "Press Ctrl-C to stop."
         )
     else:
         segmenter = WindowSegmenter(
@@ -426,7 +505,7 @@ def main() -> None:
     segmenter_thread = threading.Thread(target=segmenter.run, name="audio-segmenter")
     worker_thread = threading.Thread(
         target=transcribe_windows,
-        args=(windows, warnings, stop_event, args.language, args.output_format),
+        args=(windows, warnings, stop_event, args.language, args.output_format, silero_vad_model),
         name="whisper-worker",
     )
     segmenter_thread.start()
