@@ -1,12 +1,13 @@
 # Live Transcription Trial Notes
 
-**Date:** 2026-08-08  
+**Dates:** 2026-08-08 through 2026-08-14
 **Status:** Early local prototype observations; not a production configuration.
 
 ## Setup used
 
-- Local MacPorts Whisper CLI (`whisper.cpp`)
-- Local Whisper Medium model: `/opt/local/share/whisper/models/medium.bin`
+- Source-built upstream Whisper CLI (`whisper.cpp`) available as `whisper` on `PATH`
+- Local Whisper Medium model: `ggml-medium.bin`, selected with `WHISPER_MODEL_PATH`
+- Local Silero VAD model for comparison: `ggml-silero-v6.2.0.bin`
 - `transcribe-microphone` command, which records short microphone chunks and transcribes them locally
 - Dedicated microphone rather than the Mac's ambient default input
 
@@ -60,6 +61,23 @@ visible duplicate/overlap fragments were not observed. The pause-based latency
 felt natural and preferable to translating arbitrary short windows. Keep the
 fixed Medium 5/4 mode as a comparison fallback while more talks are evaluated.
 
+### Integrated Silero VAD trial (2026-08-14)
+
+The source-built Whisper CLI's integrated Silero VAD was added as an explicit
+runtime option while retaining Python/WebRTC as the default baseline:
+
+```sh
+./scripts/run-demo --vad-backend silero
+```
+
+Early runs exposed overlap and boundary-word issues because each live capture
+window is independently transcribed. The working implementation requests
+Whisper's full JSON token output, calibrates its VAD-compressed timing back to
+the original audio timeline, and emits only tokens extending beyond the prior
+overlapping window. In the final live confirmation, Silero was near-perfect and
+subjectively produced more natural phrase boundaries than the Python/WebRTC
+baseline. Continue sustained-talk testing before changing the default backend.
+
 ### Piper local-speech trial (2026-08-09)
 
 The Mexican-Spanish Piper voice was connected to the live VAD → Whisper →
@@ -72,12 +90,12 @@ listening fatigue, and terminology pronunciation before any Zoom routing.
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.
 - The microphone signal is still the main quality variable; compare a saved continuous recording with live-capture windows before drawing model conclusions.
-- Fixed-window overlap de-duplication is conservative and may still leave repeated text or miss a difficult boundary phrase; VAD mode reduced this in the initial trial.
+- Python/WebRTC remains the default backend while the newer Silero path receives longer live-event testing.
+- Silero timing reconciliation depends on the supported `whisper.cpp` full-JSON output contract; an incompatible CLI fails before microphone capture.
 
 ## Next experiments
 
-1. Switch the project environment back to Medium before continuing live trials.
-2. Run a sustained 5–10 minute English talk and note accuracy, lag, and listening-relevant errors.
+1. Run a sustained 5–10 minute English talk with both WebRTC and Silero, noting accuracy, lag, and listening-relevant errors.
+2. Decide whether the live demo default should switch from WebRTC to Silero.
 3. Add explicit input-device selection and basic input-level visibility.
 4. Evaluate continuous overlapping windows against a saved continuous recording of the same speech.
-5. Repeat the VAD comparison with 0.45 and 0.5 seconds of phrase-end silence over a sustained 5–10 minute talk.

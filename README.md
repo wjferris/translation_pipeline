@@ -30,16 +30,21 @@ flowchart TB
     Browser("Full-screen local browser<br/>English and Spanish display<br/><code>http://127.0.0.1:8765</code>")
 
     subgraph Mac["Local Mac — Python / uv project"]
-        Launcher("Demo launcher<br/><code>scripts/run-demo</code><br/>Zsh loads <code>.env</code> then runs <code>uv run demo</code>")
-        Coordinator("Demo coordinator<br/><code>demo.py</code><br/>Python, local HTTP server, Server-Sent Events")
-        Capture("Audio capture and segmentation<br/><code>sounddevice</code> + WebRTC VAD<br/><code>transcribe_microphone.py</code>")
-        ASR("English speech recognition<br/>MacPorts <code>whisper.cpp</code><br/>local <code>medium.bin</code> model")
+        Launcher("Background demo launcher<br/><code>scripts/run-demo</code><br/>Zsh loads <code>.env</code> then starts an isolated session")
+        Coordinator("Demo coordinator<br/><code>demo_service.py</code> + <code>demo.py</code><br/>Python, local HTTP server, Server-Sent Events")
+        Capture("Audio capture<br/><code>sounddevice</code><br/><code>transcribe_microphone.py</code>")
+        VAD{"VAD backend<br/><code>--vad-backend</code>"}
+        WebRTC("Default: Python WebRTC VAD<br/>pause-delimited phrases")
+        Silero("Option: integrated Silero VAD<br/>timestamp-aware overlap boundaries")
+        ASR("English speech recognition<br/>source-built <code>whisper.cpp</code><br/>local <code>ggml-medium.bin</code>")
         Buffer("English phrase buffer<br/><code>buffer_phrases.py</code><br/>Python NDJSON sentence grouping")
         Translation("Spanish text translation<br/>local Ollama<br/><code>translategemma:4b</code>")
         TTS("Spanish speech synthesis and playback<br/>Piper <code>es_MX-claude-high</code><br/><code>sounddevice</code> output device")
 
         Launcher --> Coordinator
-        Input --> Capture --> ASR
+        Input --> Capture --> VAD
+        VAD -->|<code>webrtc</code> default| WebRTC --> ASR
+        VAD -->|<code>silero</code>| Silero --> ASR
         ASR -->|English NDJSON| Coordinator
         Coordinator -->|English NDJSON| Buffer
         Buffer -->|completed English phrase| Translation
@@ -56,17 +61,17 @@ flowchart TB
     classDef output fill:#06384f,stroke:#17e5f6,color:#f4f8ff,stroke-width:2px
     class Input input
     class Launcher launcher
-    class Capture,ASR,Buffer,Coordinator core
+    class Capture,VAD,WebRTC,Silero,ASR,Buffer,Coordinator core
     class Translation,TTS,Browser,Speaker output
     style Mac fill:#04152c,stroke:#5bbbed,stroke-width:2px,color:#f4f8ff
 ```
 
 | Component | Technology | What it does |
 | --- | --- | --- |
-| Demo launcher | Zsh, `.env`, `uv` | Starts the demo from the project root and forwards any command-line switches to `demo`. |
-| Demo coordinator | Python `demo.py`, built-in `ThreadingHTTPServer`, Server-Sent Events | Starts the live workers, sends English and Spanish events to the display, and coordinates translation and speech. It binds the display to the local Mac only. |
-| Audio capture and pause detection | `sounddevice`, WebRTC VAD | Receives the English input continuously and identifies phrase boundaries using natural pauses. |
-| English ASR | MacPorts `whisper.cpp`, local Whisper `medium.bin` | Converts each completed English audio phrase into text. |
+| Demo launcher | Zsh, `.env`, `uv`, isolated process group | Starts the demo in the background from any directory and forwards command-line switches to `demo`. `scripts/stop-demo` stops the complete session. |
+| Demo coordinator | Python `demo_service.py` and `demo.py`, built-in `ThreadingHTTPServer`, Server-Sent Events | Starts the live workers, sends English and Spanish events to the display, and coordinates translation and speech. It binds the display to the local Mac only. |
+| Audio capture and VAD selection | `sounddevice`, `--vad-backend` | Receives English audio continuously and selects Python/WebRTC pause segmentation (default) or Whisper-integrated Silero VAD. |
+| English ASR | Source-built `whisper.cpp`, local `ggml-medium.bin` | Converts local audio to English. In Silero mode, uses `ggml-silero-v6.2.0.bin` plus full JSON token timing to reconcile overlapping capture windows. |
 | Phrase buffer | Python `buffer_phrases.py`, NDJSON | Holds unfinished ASR text briefly so the translator receives more complete sentences and fewer mid-sentence fragments. |
 | Text translation | Local Ollama, `translategemma:4b` | Translates completed English phrases into Spanish without calling a cloud service. |
 | Spanish speech | Piper `es_MX-claude-high`, `sounddevice` | Generates Mexican-Spanish speech and plays it sequentially through the selected Mac audio output. |
@@ -125,13 +130,12 @@ uv run transcribe-whisper src/resources/voxtral-winning-call.mp3
 ```
 
 The command prints only the transcript to standard output; status and errors
-are written to standard error. It uses the local MacPorts model at
-`/opt/local/share/whisper/models/medium.bin` by default. Set
-`WHISPER_MODEL_PATH` in `.env` to use another local Whisper model.
+are written to standard error. With a source-built `whisper.cpp` executable on
+`PATH`, the wrapper discovers the adjacent `models/ggml-medium.bin`. Set
+`WHISPER_MODEL_PATH` in `.env` to select another local Whisper model.
 
-The wrapper also supplies MacPorts' `/opt/local/lib` path when it starts
-Whisper, working around a runtime-library path omission that can reappear when
-the MacPorts Whisper variant is changed.
+The wrapper preserves any existing local dynamic-library fallback path when it
+starts Whisper, which keeps the CLI launch self-contained across installations.
 
 The short sample is an 8-second excerpt of the public `winning_call.mp3` file
 used in Mistral's Voxtral documentation. The complete 25-second source clip is
@@ -213,8 +217,8 @@ model. The launcher discovers `ggml-silero-v6.2.0.bin` beside a source-built
 | `--vad-backend webrtc` | `webrtc` | Use the existing Python/WebRTC pause detector. |
 | `--vad-backend silero` | — | Use Whisper-integrated Silero VAD; requires a compatible local Whisper CLI and Silero model. |
 | `--silero-vad-model PATH` | discovered | Override the GGML Silero model location. |
-| `--window-seconds 5` | `5` | Fixed-window duration; applies in `fixed` mode. |
-| `--stride-seconds 4` | `4` | Time between fixed-window starts; use a smaller value than the window for overlap. |
+| `--window-seconds 5` | `5` | Fixed-window duration; also defines the capture window for Silero mode. |
+| `--stride-seconds 4` | `4` | Time between fixed-window starts; use a smaller value than the window for context overlap. |
 | `--vad-silence-seconds 0.45` | `0.7` | Silence required to finish a VAD phrase; lower values reduce delay but can split natural pauses. |
 | `--vad-pre-roll-seconds 0.3` | `0.3` | Audio retained immediately before VAD detects speech. |
 | `--vad-min-phrase-seconds 0.7` | `0.7` | Shortest detected phrase sent to Whisper. |
@@ -335,8 +339,8 @@ use `--no-open-browser`; use `--port` to choose another local port.
 
 The demo defaults to the current VAD experiment settings: `--segmentation vad`
 with the Python/WebRTC backend and `--vad-silence-seconds 0.45`. Add
-`--vad-backend silero` to compare Whisper-integrated Silero VAD. It supports the
-same fixed-window/VAD tuning options as `transcribe-microphone`, plus
+`--vad-backend silero` to compare Whisper-integrated Silero VAD. It supports
+the shared segmentation/window options from `transcribe-microphone`, plus
 `--translation-model`, `--piper-model`, and `--output-device`.
 
 The display server binds only to `127.0.0.1`, and all models run locally. Once
