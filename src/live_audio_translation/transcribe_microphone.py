@@ -24,6 +24,7 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import webrtcvad
+from silero_vad import VADIterator, load_silero_vad
 
 from live_audio_translation.process_identity import set_demo_process_title
 from live_audio_translation.transcribe_whisper import (
@@ -87,11 +88,10 @@ def parse_args() -> argparse.Namespace:
         default="webrtc",
         help="Local VAD backend for --segmentation vad (default: webrtc).",
     )
-    parser.add_argument(
-        "--silero-vad-model",
-        type=Path,
-        help="Path to the whisper.cpp GGML Silero VAD model (default: discover beside whisper).",
-    )
+    parser.add_argument("--silero-threshold", type=float, default=0.5, help="Stateful Silero speech confidence threshold (default: 0.5).")
+    parser.add_argument("--silero-min-silence-seconds", type=float, default=0.3, help="Stateful Silero silence that ends speech (default: 0.3).")
+    parser.add_argument("--silero-speech-pad-seconds", type=float, default=0.1, help="Stateful Silero recognition padding (default: 0.1).")
+    parser.add_argument("--silero-max-phrase-seconds", type=float, default=10.0, help="Stateful Silero maximum phrase duration (default: 10).")
     parser.add_argument(
         "--vad-aggressiveness",
         type=int,
@@ -218,7 +218,7 @@ class WindowSegmenter:
         buffer_start = 0
         received = 0
         next_window_start = 0
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() or not self.blocks.empty():
             try:
                 block = self.blocks.get(timeout=0.1)
             except queue.Empty:
@@ -327,7 +327,7 @@ class VADSegmenter:
             self.pre_roll.clear()
 
     def run(self) -> None:
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() or not self.blocks.empty():
             try:
                 block = self.blocks.get(timeout=0.1)
             except queue.Empty:
@@ -341,6 +341,54 @@ class VADSegmenter:
                 self.process_frame(frame, frame_start)
         if self.phrase_frames:
             self.finish_phrase(self.received)
+
+
+class SileroSegmenter(VADSegmenter):
+    """Continuous local Silero VAD that emits each phrase once."""
+
+    def __init__(self, blocks: queue.Queue[np.ndarray], windows: queue.Queue[AudioWindow], warnings: queue.Queue[str], stop_event: threading.Event, threshold: float, silence_seconds: float, pad_seconds: float, max_phrase_seconds: float) -> None:
+        self.blocks, self.windows, self.warnings, self.stop_event = blocks, windows, warnings, stop_event
+        self.frame_samples = 512
+        self.pending = np.empty(0, dtype=np.float32)
+        self.received = 0
+        self.max_phrase_samples = round(max_phrase_seconds * SAMPLE_RATE)
+        self.pad_samples = round(pad_seconds * SAMPLE_RATE)
+        self.history = np.empty(0, dtype=np.float32)
+        self.phrase = np.empty(0, dtype=np.float32)
+        self.phrase_start_sample = 0
+        self.last_owned_end = 0
+        self.iterator_base_sample = 0
+        self.iterator = VADIterator(load_silero_vad(onnx=True), threshold=threshold, sampling_rate=SAMPLE_RATE, min_silence_duration_ms=round(silence_seconds * 1000), speech_pad_ms=round(pad_seconds * 1000))
+
+    def finish(self, end_sample: int) -> None:
+        if len(self.phrase):
+            owned_end = max(self.phrase_start_sample, end_sample)
+            self.put_window(AudioWindow(self.phrase.reshape(-1, 1), round(self.phrase_start_sample * 1000 / SAMPLE_RATE), round(owned_end * 1000 / SAMPLE_RATE)))
+            self.last_owned_end = owned_end
+        self.phrase = np.empty(0, dtype=np.float32)
+
+    def run(self) -> None:
+        while not self.stop_event.is_set() or not self.blocks.empty():
+            try: block = self.blocks.get(timeout=0.1)
+            except queue.Empty: continue
+            self.pending = np.concatenate((self.pending, block[:, 0]))
+            while len(self.pending) >= self.frame_samples:
+                frame, self.pending = self.pending[:self.frame_samples].copy(), self.pending[self.frame_samples:]
+                raw_event = self.iterator(frame)
+                event = ({key: value + self.iterator_base_sample for key, value in raw_event.items()} if raw_event else None)
+                frame_start = self.received; self.received += len(frame)
+                self.history = np.concatenate((self.history, frame))[-self.pad_samples:]
+                if event and "start" in event:
+                    self.phrase_start_sample = max(self.last_owned_end, event["start"])
+                    self.phrase = self.history[:-len(frame)].copy()
+                if len(self.phrase): self.phrase = np.concatenate((self.phrase, frame))
+                if len(self.phrase) >= self.max_phrase_samples:
+                    self.finish(frame_start + len(frame))
+                    self.iterator.reset_states()
+                    self.iterator_base_sample = self.received
+                elif event and "end" in event:
+                    self.finish(event["end"])
+        self.finish(self.received)
 
 
 def capture_callback(
@@ -454,11 +502,8 @@ def main() -> None:
     args = parse_args()
     try:
         validate_args(args)
-        silero_vad_model = (
-            validate_silero_vad(args.silero_vad_model)
-            if args.segmentation == "vad" and args.vad_backend == "silero"
-            else None
-        )
+        if args.vad_backend == "silero" and not 0 < args.silero_threshold < 1:
+            raise ValueError("--silero-threshold must be between 0 and 1.")
     except ValueError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(2) from exc
@@ -485,12 +530,10 @@ def main() -> None:
             f"or {args.vad_max_phrase_seconds:g} seconds maximum. Press Ctrl-C to stop."
         )
     elif args.segmentation == "vad":
-        segmenter = WindowSegmenter(
-            blocks, windows, warnings, stop_event, args.window_seconds, args.stride_seconds
-        )
+        segmenter = SileroSegmenter(blocks, windows, warnings, stop_event, args.silero_threshold, args.silero_min_silence_seconds, args.silero_speech_pad_seconds, args.silero_max_phrase_seconds)
         listening_message = (
-            "Listening continuously with Whisper-integrated Silero VAD "
-            f"in {args.window_seconds:g}-second windows every {args.stride_seconds:g} seconds. "
+            "Listening continuously with stateful local Silero VAD "
+            f"at confidence {args.silero_threshold:g}. "
             "Press Ctrl-C to stop."
         )
     else:
@@ -505,7 +548,7 @@ def main() -> None:
     segmenter_thread = threading.Thread(target=segmenter.run, name="audio-segmenter")
     worker_thread = threading.Thread(
         target=transcribe_windows,
-        args=(windows, warnings, stop_event, args.language, args.output_format, silero_vad_model),
+        args=(windows, warnings, stop_event, args.language, args.output_format),
         name="whisper-worker",
     )
     segmenter_thread.start()

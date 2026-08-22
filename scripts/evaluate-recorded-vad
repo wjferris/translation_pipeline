@@ -1,0 +1,53 @@
+#!/bin/zsh
+# Run the developer-only recorded WAV evaluation for one or both VAD backends.
+# Usage: scripts/evaluate-recorded-vad [webrtc|silero|both] recording.wav reference.srt [evaluator options]
+
+set -euo pipefail
+
+PROJECT_DIR="${0:A:h:h}"
+ENV_FILE="$PROJECT_DIR/.env"
+BACKEND="${1:-both}"
+
+if [[ "$BACKEND" != "webrtc" && "$BACKEND" != "silero" && "$BACKEND" != "both" ]]; then
+  print -u2 "First argument must be webrtc, silero, or both."
+  exit 2
+fi
+shift
+
+if (( $# < 2 )); then
+  print -u2 "Usage: $0 [webrtc|silero|both] recording.wav reference.srt [evaluator options]"
+  exit 2
+fi
+if [[ ! -f "$ENV_FILE" ]]; then
+  print -u2 "Missing $ENV_FILE. Create it before running the evaluation."
+  exit 2
+fi
+
+WAV="$1"
+REFERENCE_SRT="$2"
+shift 2
+set -a
+source "$ENV_FILE"
+set +a
+
+cd "$PROJECT_DIR"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+OUTPUT_ROOT="$PROJECT_DIR/evaluation-artifacts/$RUN_ID"
+
+run_backend() {
+  local selected="$1"
+  shift
+  uv run python tools/evaluate_recorded_vad.py "$WAV" \
+    --reference-srt "$REFERENCE_SRT" \
+    --vad-backend "$selected" \
+    --output-dir "$OUTPUT_ROOT/$selected" "$@"
+}
+
+if [[ "$BACKEND" == "webrtc" || "$BACKEND" == "both" ]]; then
+  run_backend webrtc "$@"
+fi
+if [[ "$BACKEND" == "silero" || "$BACKEND" == "both" ]]; then
+  run_backend silero "$@"
+fi
+
+print "Evaluation artifacts: $OUTPUT_ROOT"

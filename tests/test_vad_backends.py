@@ -139,7 +139,10 @@ class VadBackendSelectionTests(unittest.TestCase):
             segmentation="vad",
             vad_backend="silero",
             language="en",
-            silero_vad_model=Path("silero.bin"),
+            silero_threshold=0.5,
+            silero_min_silence_seconds=0.3,
+            silero_speech_pad_seconds=0.1,
+            silero_max_phrase_seconds=10.0,
             vad_silence_seconds=0.45,
             vad_aggressiveness=2,
             vad_pre_roll_seconds=0.3,
@@ -149,5 +152,5 @@ class VadBackendSelectionTests(unittest.TestCase):
             stride_seconds=4.0,
         )
         command = demo.microphone_command(args)
-        self.assertEqual(command[-4:], ["--vad-backend", "silero", "--silero-vad-model", "silero.bin"])
+        self.assertEqual(command[-10:], ["--vad-backend", "silero", "--silero-threshold", "0.5", "--silero-min-silence-seconds", "0.3", "--silero-speech-pad-seconds", "0.1", "--silero-max-phrase-seconds", "10.0"])
         self.assertNotIn("--vad-aggressiveness", command)

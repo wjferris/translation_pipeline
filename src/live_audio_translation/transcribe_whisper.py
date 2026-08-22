@@ -146,6 +146,7 @@ def transcription_command(
     silero_vad_model: Path | None = None,
     output_json: bool = False,
     output_json_full: bool = False,
+    no_gpu: bool = False,
 ) -> list[str]:
     """Build a compatible local Whisper CLI request for one audio file."""
     command = [
@@ -162,6 +163,8 @@ def transcription_command(
     ]
     if silero_vad_model is not None:
         command.extend(["--vad", "--vad-model", str(silero_vad_model)])
+    if no_gpu:
+        command.append("--no-gpu")
     return command
 
 
@@ -260,6 +263,7 @@ def transcribe(
     show_status: bool = True,
     cancel_event: threading.Event | None = None,
     silero_vad_model: Path | None = None,
+    no_gpu: bool = False,
 ) -> str:
     """Run Whisper locally and return its plain-text transcript.
 
@@ -277,7 +281,7 @@ def transcribe(
     with tempfile.TemporaryDirectory(prefix="whisper-transcript-") as temp_dir:
         output_prefix = Path(temp_dir) / "transcript"
         command = transcription_command(
-            executable, model_path, language, output_prefix, audio_path, silero_vad_model
+            executable, model_path, language, output_prefix, audio_path, silero_vad_model, no_gpu=no_gpu
         )
         run_whisper(command, cancel_event)
 
@@ -293,6 +297,7 @@ def transcribe_timed(
     *,
     cancel_event: threading.Event | None = None,
     silero_vad_model: Path,
+    no_gpu: bool = False,
 ) -> list[TranscriptSegment]:
     """Run integrated Silero VAD and return Whisper's timestamped segments."""
     executable = whisper_command()
@@ -309,6 +314,7 @@ def transcribe_timed(
             audio_path,
             silero_vad_model,
             output_json_full=True,
+            no_gpu=no_gpu,
         )
         run_whisper(command, cancel_event)
         return read_transcript_segments(output_prefix)

@@ -274,10 +274,10 @@ def parse_args() -> argparse.Namespace:
         "--vad-backend", choices=("webrtc", "silero"), default="webrtc",
         help="Local VAD backend for --segmentation vad (default: webrtc).",
     )
-    parser.add_argument(
-        "--silero-vad-model", type=Path,
-        help="Path to the whisper.cpp GGML Silero VAD model.",
-    )
+    parser.add_argument("--silero-threshold", type=float, default=0.5, help="Stateful Silero speech confidence (default: 0.5).")
+    parser.add_argument("--silero-min-silence-seconds", type=float, default=0.3, help="Stateful Silero phrase-end silence (default: 0.3).")
+    parser.add_argument("--silero-speech-pad-seconds", type=float, default=0.1, help="Stateful Silero recognition padding (default: 0.1).")
+    parser.add_argument("--silero-max-phrase-seconds", type=float, default=10.0, help="Stateful Silero maximum phrase (default: 10).")
     parser.add_argument("--window-seconds", type=float, default=5.0, help="Fixed-window duration (default: 5).")
     parser.add_argument("--stride-seconds", type=float, default=4.0, help="Fixed-window stride (default: 4).")
     parser.add_argument("--vad-silence-seconds", type=float, default=0.45, help="VAD phrase-end silence (default: 0.45).")
@@ -305,8 +305,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Whisper executable not found on PATH.")
     if args.segmentation != "vad" and args.vad_backend != "webrtc":
         raise ValueError("--vad-backend is only valid with --segmentation vad.")
-    if args.segmentation == "vad" and args.vad_backend == "silero":
-        validate_silero_vad(args.silero_vad_model)
     if args.max_wait_seconds <= 0:
         raise ValueError("--max-wait-seconds must be greater than zero.")
 
@@ -329,8 +327,8 @@ def microphone_command(args: argparse.Namespace) -> list[str]:
                 "--vad-min-phrase-seconds", str(args.vad_min_phrase_seconds),
                 "--vad-max-phrase-seconds", str(args.vad_max_phrase_seconds),
             ])
-        elif args.silero_vad_model is not None:
-            command.extend(["--silero-vad-model", str(args.silero_vad_model)])
+        else:
+            command.extend(["--silero-threshold", str(args.silero_threshold), "--silero-min-silence-seconds", str(args.silero_min_silence_seconds), "--silero-speech-pad-seconds", str(args.silero_speech_pad_seconds), "--silero-max-phrase-seconds", str(args.silero_max_phrase_seconds)])
     else:
         command.extend(["--window-seconds", str(args.window_seconds), "--stride-seconds", str(args.stride_seconds)])
     return command

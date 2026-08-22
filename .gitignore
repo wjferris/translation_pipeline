@@ -10,9 +10,17 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
-# Generated local TTS audio
+# Audio and video files, models, and generated artifacts
 *.wav
+*.mp4
+*.srt
+*.mp3
 models/
+
+# Local recorded-VAD evaluation fixture and generated comparison artifacts
+src/resources/2026-04-1030-patrick-kearon-720p-eng.mp4
+src/resources/2026-04-1030-patrick-kearon-720p-eng.srt
+evaluation-artifacts/
 
 # Local recovery snapshots are redundant once this repository is pushed.
 backups/
@@ -21,3 +29,6 @@ backups/
 # macOS and editor files
 .DS_Store
 .vscode/
+
+# Local test results and temporary files
+*.pdf
