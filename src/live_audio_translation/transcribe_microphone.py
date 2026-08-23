@@ -41,6 +41,8 @@ SAMPLE_RATE = 16_000
 BLOCK_SECONDS = 0.1
 WINDOW_QUEUE_SIZE = 3
 VAD_FRAME_SECONDS = 0.03
+MIN_INPUT_GAIN_DB = -48.0
+MAX_INPUT_GAIN_DB = 48.0
 
 
 @dataclass
@@ -127,6 +129,12 @@ def parse_args() -> argparse.Namespace:
         choices=("text", "ndjson"),
         default="text",
         help="Output completed transcripts as readable text or newline-delimited JSON (default: text).",
+    )
+    parser.add_argument(
+        "--input-gain-db",
+        type=float,
+        default=0.0,
+        help="Local microphone gain in dB from -48 through +48 (default: 0).",
     )
     return parser.parse_args()
 
@@ -394,12 +402,17 @@ class SileroSegmenter(VADSegmenter):
 def capture_callback(
     blocks: queue.Queue[np.ndarray],
     warnings: queue.Queue[str],
+    input_gain: float = 1.0,
 ) -> callable:
     def callback(indata: np.ndarray, _frames: int, _time: object, status: sd.CallbackFlags) -> None:
         if status:
             warnings.put(f"Microphone status: {status}")
         try:
-            blocks.put_nowait(indata.copy())
+            if input_gain == 1.0:
+                audio = indata.copy()
+            else:
+                audio = np.clip(indata * input_gain, -1.0, 1.0)
+            blocks.put_nowait(audio)
         except queue.Full:
             warnings.put("Microphone capture is overloaded; discarded an audio block.")
 
@@ -480,6 +493,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stride-seconds cannot exceed --window-seconds.")
     if args.duration is not None and args.duration <= 0:
         raise ValueError("--duration must be greater than zero.")
+    if not MIN_INPUT_GAIN_DB <= args.input_gain_db <= MAX_INPUT_GAIN_DB:
+        raise ValueError(
+            f"--input-gain-db must be between {MIN_INPUT_GAIN_DB:g} and {MAX_INPUT_GAIN_DB:g}."
+        )
     if args.segmentation != "vad" and args.vad_backend != "webrtc":
         raise ValueError("--vad-backend is only valid with --segmentation vad.")
     if not 0 <= args.vad_aggressiveness <= 3:
@@ -507,6 +524,8 @@ def main() -> None:
     except ValueError as exc:
         print(exc, file=sys.stderr)
         raise SystemExit(2) from exc
+    input_gain = 10 ** (args.input_gain_db / 20)
+    input_gain_label = f"{args.input_gain_db:+g}" if args.input_gain_db else "0"
 
     blocks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
     windows: queue.Queue[AudioWindow] = queue.Queue(maxsize=WINDOW_QUEUE_SIZE)
@@ -555,14 +574,14 @@ def main() -> None:
     worker_thread.start()
 
     started_at = time.monotonic()
-    print(listening_message, file=sys.stderr)
+    print(f"{listening_message} Input gain: {input_gain_label} dB.", file=sys.stderr)
     try:
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
             blocksize=round(BLOCK_SECONDS * SAMPLE_RATE),
-            callback=capture_callback(blocks, warnings),
+            callback=capture_callback(blocks, warnings, input_gain),
         ):
             while args.duration is None or time.monotonic() - started_at < args.duration:
                 try:

@@ -173,6 +173,17 @@ For example, 5.5-second windows every 4.5 seconds retain a one-second overlap:
 uv run transcribe-microphone --window-seconds 5.5 --stride-seconds 4.5
 ```
 
+For a quiet but valid fixed-gain line input, apply local software gain before
+VAD and Whisper. Start at `30 dB` for a raw peak around `0.001`, then reduce it
+if loud audio distorts or clips:
+
+```sh
+uv run transcribe-microphone --input-gain-db 30
+```
+
+The default is `0 dB`; gain is applied to the captured samples only and does
+not modify the macOS device setting.
+
 If Whisper cannot keep up, the command reports a backlog warning and discards
 older pending windows to remain close to live output.
 
@@ -226,6 +237,7 @@ The stateful implementation uses the locally installed `silero-vad` Python packa
 | `--vad-min-phrase-seconds 0.7` | `0.7` | Shortest detected phrase sent to Whisper. |
 | `--vad-max-phrase-seconds 10` | `10` | Forced split for continuous speech without a pause. |
 | `--vad-aggressiveness 0`–`3` | `2` | VAD sensitivity; begin with the default unless it misses quiet speech or reacts to noise. |
+| `--input-gain-db 30` | `0` | Local microphone gain before VAD and Whisper; accepts `-48` through `48` dB and clips samples that exceed the supported range. |
 | `--output-format ndjson` | `text` | Send machine-readable finalized English events to the translation pipeline. |
 | `--duration 6` | unlimited | Stop automatically after a short microphone test. |
 
@@ -371,6 +383,7 @@ device or tune a component without editing the script:
 ./scripts/run-demo --output-device "USB Audio Device"
 ./scripts/run-demo --vad-silence-seconds 0.35 --no-open-browser
 ./scripts/run-demo --vad-backend silero
+./scripts/run-demo --input-gain-db 30
 ./scripts/run-demo --translation-model translategemma:4b
 ```
 
@@ -382,7 +395,7 @@ The demo defaults to the current VAD experiment settings: `--segmentation vad`
 with the Python/WebRTC backend and `--vad-silence-seconds 0.45`. Add
 `--vad-backend silero` to compare stateful local Silero VAD. It supports
 the shared segmentation/window options from `transcribe-microphone`, plus
-`--translation-model`, `--piper-model`, and `--output-device`.
+`--input-gain-db`, `--translation-model`, `--piper-model`, and `--output-device`.
 
 The display server binds only to `127.0.0.1`, and all models run locally. Once
 dependencies and models are installed, the demo works without internet access.

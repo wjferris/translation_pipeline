@@ -169,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vad-pre-roll-seconds", type=float, default=0.3, help="VAD pre-roll (default: 0.3).")
     parser.add_argument("--vad-min-phrase-seconds", type=float, default=0.7, help="Minimum VAD phrase (default: 0.7).")
     parser.add_argument("--vad-max-phrase-seconds", type=float, default=10.0, help="Maximum VAD phrase (default: 10).")
+    parser.add_argument("--input-gain-db", type=float, default=0.0, help="Local microphone gain in dB from -48 through +48 (default: 0).")
     parser.add_argument("--max-wait-seconds", type=float, default=5.0, help="Phrase buffer maximum wait (default: 5).")
     parser.add_argument("--translation-model", default=DEFAULT_MODEL, help=f"Local Ollama model (default: {DEFAULT_MODEL}).")
     parser.add_argument("--piper-model", type=Path, default=DEFAULT_MODEL_PATH, help=f"Local Piper .onnx voice (default: {DEFAULT_MODEL_PATH}).")
@@ -191,6 +192,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--vad-backend is only valid with --segmentation vad.")
     if args.max_wait_seconds <= 0:
         raise ValueError("--max-wait-seconds must be greater than zero.")
+    if not -48 <= args.input_gain_db <= 48:
+        raise ValueError("--input-gain-db must be between -48 and 48.")
 
 
 def microphone_command(args: argparse.Namespace) -> list[str]:
@@ -215,6 +218,8 @@ def microphone_command(args: argparse.Namespace) -> list[str]:
             command.extend(["--silero-threshold", str(args.silero_threshold), "--silero-min-silence-seconds", str(args.silero_min_silence_seconds), "--silero-speech-pad-seconds", str(args.silero_speech_pad_seconds), "--silero-max-phrase-seconds", str(args.silero_max_phrase_seconds)])
     else:
         command.extend(["--window-seconds", str(args.window_seconds), "--stride-seconds", str(args.stride_seconds)])
+    if args.input_gain_db:
+        command.extend(["--input-gain-db", str(args.input_gain_db)])
     return command
 
 

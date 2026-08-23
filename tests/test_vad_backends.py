@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import queue
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+import numpy as np
 
 from live_audio_translation import demo, transcribe_microphone, transcribe_whisper
 
@@ -130,6 +133,7 @@ class VadBackendSelectionTests(unittest.TestCase):
             vad_pre_roll_seconds=0.3,
             vad_min_phrase_seconds=0.7,
             vad_max_phrase_seconds=10.0,
+            input_gain_db=0.0,
         )
         with self.assertRaisesRegex(ValueError, "only valid with --segmentation vad"):
             transcribe_microphone.validate_args(args)
@@ -150,7 +154,73 @@ class VadBackendSelectionTests(unittest.TestCase):
             vad_max_phrase_seconds=10.0,
             window_seconds=5.0,
             stride_seconds=4.0,
+            input_gain_db=30.0,
         )
         command = demo.microphone_command(args)
-        self.assertEqual(command[-10:], ["--vad-backend", "silero", "--silero-threshold", "0.5", "--silero-min-silence-seconds", "0.3", "--silero-speech-pad-seconds", "0.1", "--silero-max-phrase-seconds", "10.0"])
+        self.assertIn("--vad-backend", command)
+        self.assertEqual(command[-2:], ["--input-gain-db", "30.0"])
         self.assertNotIn("--vad-aggressiveness", command)
+
+
+class InputGainTests(unittest.TestCase):
+    def captured_block(self, samples: np.ndarray, input_gain: float) -> np.ndarray:
+        blocks: queue.Queue[np.ndarray] = queue.Queue()
+        callback = transcribe_microphone.capture_callback(blocks, queue.Queue(), input_gain)
+        callback(samples, len(samples), None, None)
+        return blocks.get_nowait()
+
+    def test_zero_gain_preserves_captured_samples(self) -> None:
+        samples = np.array([[-0.25], [0.5]], dtype=np.float32)
+        captured = self.captured_block(samples, 1.0)
+        np.testing.assert_array_equal(captured, samples)
+        self.assertIsNot(captured, samples)
+
+    def test_positive_gain_amplifies_captured_samples(self) -> None:
+        samples = np.array([[-0.05], [0.05]], dtype=np.float32)
+        captured = self.captured_block(samples, 10.0)
+        np.testing.assert_allclose(captured, [[-0.5], [0.5]])
+
+    def test_attenuation_reduces_captured_samples(self) -> None:
+        samples = np.array([[-1.0], [1.0]], dtype=np.float32)
+        captured = self.captured_block(samples, 10 ** (-6 / 20))
+        np.testing.assert_allclose(captured, [[-0.501187], [0.501187]], rtol=1e-5)
+
+    def test_amplified_samples_are_clipped(self) -> None:
+        samples = np.array([[-0.25], [0.25]], dtype=np.float32)
+        captured = self.captured_block(samples, 10.0)
+        np.testing.assert_array_equal(captured, [[-1.0], [1.0]])
+
+    def test_input_gain_accepts_boundary_values(self) -> None:
+        base_args = dict(
+            window_seconds=5.0,
+            stride_seconds=4.0,
+            duration=None,
+            segmentation="fixed",
+            vad_backend="webrtc",
+            vad_aggressiveness=2,
+            vad_silence_seconds=0.7,
+            vad_pre_roll_seconds=0.3,
+            vad_min_phrase_seconds=0.7,
+            vad_max_phrase_seconds=10.0,
+        )
+        for gain in (transcribe_microphone.MIN_INPUT_GAIN_DB, transcribe_microphone.MAX_INPUT_GAIN_DB):
+            transcribe_microphone.validate_args(SimpleNamespace(**base_args, input_gain_db=gain))
+        with patch("sys.argv", ["transcribe-microphone", "--input-gain-db", "48"]):
+            self.assertEqual(transcribe_microphone.parse_args().input_gain_db, 48.0)
+
+    def test_input_gain_rejects_out_of_range_values(self) -> None:
+        base_args = dict(
+            window_seconds=5.0,
+            stride_seconds=4.0,
+            duration=None,
+            segmentation="fixed",
+            vad_backend="webrtc",
+            vad_aggressiveness=2,
+            vad_silence_seconds=0.7,
+            vad_pre_roll_seconds=0.3,
+            vad_min_phrase_seconds=0.7,
+            vad_max_phrase_seconds=10.0,
+        )
+        for gain in (-48.1, 48.1):
+            with self.assertRaisesRegex(ValueError, "--input-gain-db must be between -48 and 48"):
+                transcribe_microphone.validate_args(SimpleNamespace(**base_args, input_gain_db=gain))
