@@ -32,3 +32,6 @@ backups/
 
 # Local test results and temporary files
 *.pdf
+Screen*.png
+tmp/
+evaluation/

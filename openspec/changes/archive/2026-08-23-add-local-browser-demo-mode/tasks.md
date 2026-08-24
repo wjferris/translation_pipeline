@@ -13,10 +13,10 @@
 ## 3. Audio and validation
 
 - [x] 3.1 Pass an explicit audio output-device choice from demo mode to Piper speech playback.
-- [ ] 3.2 Verify a complete offline demo using microphone or wireless input and separate-room Spanish output.
-- [ ] 3.3 Verify the existing CLI-only pipeline remains unchanged.
+- [x] 3.2 Verify a complete offline demo using microphone or wireless input and separate-room Spanish output.
+- [x] 3.3 Verify the existing CLI-only pipeline remains unchanged.
 
 ## 4. Documentation
 
 - [x] 4.1 Document the demo launch, browser use, output-device selection, and feedback-avoidance setup.
-- [ ] 4.2 Add a short demo trial note with observed timing and listener feedback.
+- [x] 4.2 Add a short demo trial note with observed timing and listener feedback.

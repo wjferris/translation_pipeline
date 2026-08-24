@@ -86,6 +86,25 @@ performed well enough to establish local Spanish speech as the next working
 baseline. Longer listener tests should still evaluate voice naturalness,
 listening fatigue, and terminology pronunciation before any Zoom routing.
 
+### Full-discourse live demo trial (2026-08-23)
+
+The end-to-end system worked well overall in a live test. The gain-controlled
+USB line input provided a usable source, and the browser demo, transcription,
+translation, and Piper output operated together.
+
+The WebRTC VAD phrase-end setting required speaker-specific tuning. A value
+between `0.3` and `0.45` seconds was useful, but the appropriate setting varied
+with the speaker's pace: faster speakers favored a shorter threshold, while
+other speakers needed more silence to avoid premature phrase endings. Treat
+`--vad-silence-seconds` as a live-test control to watch and adjust rather than a
+single universal value.
+
+The largest issue was accumulated end-to-end delay during a sustained talk. The
+test ran for the final speaker's full discourse; by the end, the translated
+output was nearly two minutes behind the speaker. This indicates backlog over
+the full pipeline rather than a tolerable per-phrase delay and is the highest
+priority issue for the next live evaluation.
+
 ## Known limitations
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.
@@ -99,3 +118,4 @@ listening fatigue, and terminology pronunciation before any Zoom routing.
 2. Decide whether the live demo default should switch from WebRTC to Silero.
 3. Add explicit input-device selection and basic input-level visibility.
 4. Evaluate continuous overlapping windows against a saved continuous recording of the same speech.
+5. Measure timestamped capture, ASR, translation, and Piper stages during a full discourse to locate and reduce accumulated end-to-end backlog.

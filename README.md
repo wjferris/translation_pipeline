@@ -407,6 +407,39 @@ a backgrounded `scripts/run-demo` session. If Piper is currently speaking, the
 demo finishes that phrase before exiting; this is intentional so native audio
 resources can close safely.
 
+### Timing traces for live talks
+
+Every browser-demo run records a private timing trace beneath
+`/tmp/babelfish-live-runs/YYYY_MM_DD_NNN` and prints its path at startup. The
+trace retains recognized and translated text, so treat it as sensitive local
+material. Its owner-only files are temporary: copy a run directory elsewhere
+before macOS clears `/tmp` if it is needed for a later evaluation.
+
+For a controlled observer-effect baseline, run the same settings once with
+`--no-timing-trace`, then repeat the talk with tracing enabled. This is the
+only mode that suppresses run-directory creation; it does not change models,
+VAD settings, gain, or stage order.
+
+| File | Contents |
+| --- | --- |
+| `manifest.json` | Run configuration, monotonic timebase, and completion/trace-health status. |
+| `asr.ndjson` | Final English segment events with source, VAD, and ASR timing. |
+| `phrases.ndjson` | Translation-ready phrase events and all contributing source segments. |
+| `translations.ndjson` | Spanish phrase events with translation timing. |
+| `playback.ndjson` | Piper TTS and output-playback timing. |
+| `timing.ndjson` | Compact lifecycle records for each reached stage boundary. |
+| `segments.ndjson` | One analysis-ready metric record per source segment. |
+
+For latency-over-session, plot each `segments.ndjson` record's `source_end_ms`
+on the x-axis against `derived_metrics.end_to_end_playback_start_ms` on the
+y-axis. A flat line is stable expected delay; a sustained upward slope is
+cumulative backlog. For a per-segment breakdown, chart the duration and wait
+fields in `derived_metrics` (`vad_duration_ms`, `asr_processing_duration_ms`,
+`translation_processing_duration_ms`, `tts_processing_duration_ms`,
+`playback_duration_ms`, and the `wait_before_*` fields). `asr_rtf` and
+`tts_rtf` above `1.0` mean that stage took longer than the source segment's
+audio duration.
+
 ### Inspecting demo processes
 
 While demo mode is running, the coordinator and its two direct worker processes
