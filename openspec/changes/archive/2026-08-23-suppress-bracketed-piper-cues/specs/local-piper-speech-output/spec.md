@@ -1,8 +1,5 @@
-# local-piper-speech-output Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-local-piper-speech-output. Update Purpose after archive.
-## Requirements
 ### Requirement: Speak translated Spanish events locally
 The system SHALL provide a `speak-stream` command that reads newline-delimited JSON events containing Spanish `text` from standard input, removes complete square-bracketed non-speech cue annotations from that text immediately before local Piper synthesis, and plays each remaining non-empty spoken value through the default local output device. The system SHALL preserve the input order of spoken values without overlapping playback. It SHALL not alter the event text used by other pipeline stages or the browser display.
 

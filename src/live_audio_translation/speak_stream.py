@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ from piper.voice import PiperVoice
 
 
 DEFAULT_MODEL_PATH = Path("models/piper/es_MX-claude-high.onnx")
+BRACKETED_CUE = re.compile(r"\[[^\[\]]*\]")
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +51,11 @@ def validate_event(value: Any) -> dict[str, Any]:
     return value
 
 
+def spoken_text(text: str) -> str:
+    """Remove complete bracketed non-speech cues before Piper synthesis."""
+    return " ".join(BRACKETED_CUE.sub(" ", text).split())
+
+
 def play_text(
     voice: PiperVoice,
     text: str,
@@ -56,6 +63,9 @@ def play_text(
     on_timing: Callable[[str], None] | None = None,
 ) -> None:
     """Synthesize one phrase and write Piper's PCM chunks to an audio device."""
+    text = spoken_text(text)
+    if not text:
+        return
     stream: sd.OutputStream | None = None
     if on_timing is not None:
         on_timing("tts_start")
