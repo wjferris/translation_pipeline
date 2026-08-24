@@ -137,6 +137,25 @@ class TimingTraceTests(unittest.TestCase):
             self.assertFalse(manifest["trace_complete"])
             self.assertGreaterEqual(manifest["trace_overflow_count"], 1)
 
+    def test_trace_marks_a_translated_but_skipped_audio_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = TraceRun.create({}, root=Path(directory), timebase_ns=1)
+            timestamps = empty_timestamps()
+            timestamps.update({"source_audio_start": 0, "source_audio_end": 1_000_000_000, "translation_complete": 2_000_000_000})
+            trace.stage("asr", traced_event("segment-1", timestamps, segment_id="segment-1"))
+            trace.stage("phrases", traced_event("phrase-1", {}, phrase_id="phrase-1", source_segment_ids=["segment-1"]))
+            trace.stage("translations", traced_event("phrase-1", timestamps, phrase_id="phrase-1", source_segment_ids=["segment-1"]))
+            skipped = traced_event("phrase-1", {"audio_skipped": 3_000_000_000}, phrase_id="phrase-1", source_segment_ids=["segment-1"])
+            skipped["timing"]["audio_state"] = "skipped"
+            skipped["timing"]["audio_skip_reason"] = "playback_queue_full"
+            skipped["timing"]["queue_depths"] = {"speech_playback": {"logical_pending": 3, "oldest_queued_age_ms": 6000}}
+            trace.stage("speech_queue", skipped)
+            trace.close("completed")
+            metric = json.loads((trace.directory / "segments.ndjson").read_text().strip())
+            self.assertEqual(metric["completion_state"], "audio_skipped")
+            self.assertEqual(metric["audio_skip_reason"], "playback_queue_full")
+            self.assertEqual(metric["derived_metrics"]["audio_skipped_latency_ms"], 2000.0)
+
     def test_milliseconds_returns_none_for_unavailable_boundary(self) -> None:
         self.assertIsNone(milliseconds(None, 1))
         self.assertEqual(milliseconds(1_000_000, 3_500_000), 2.5)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import queue
@@ -25,6 +26,9 @@ TIMESTAMP_FIELDS = (
     "asr_complete",
     "translation_start",
     "translation_complete",
+    "speech_enqueued",
+    "speech_dequeued",
+    "audio_skipped",
     "tts_start",
     "tts_first_audio",
     "tts_complete",
@@ -124,6 +128,7 @@ class TraceRun:
         self._segments: dict[str, dict[str, Any]] = {}
         self._phrases: dict[str, dict[str, Any]] = {}
         self._translations: dict[str, dict[str, Any]] = {}
+        self._speech_queue: dict[str, dict[str, Any]] = {}
         self._playback: dict[str, dict[str, Any]] = {}
         self._writer = threading.Thread(target=self._write_loop, name="timing-trace-writer")
         self._writer.start()
@@ -158,7 +163,7 @@ class TraceRun:
 
         started_timebase = timebase_ns if timebase_ns is not None else time.monotonic_ns()
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "status": "running",
             "trace_complete": True,
@@ -170,6 +175,7 @@ class TraceRun:
                 "asr.ndjson",
                 "phrases.ndjson",
                 "translations.ndjson",
+                "speech_queue.ndjson",
                 "playback.ndjson",
                 "timing.ndjson",
                 "segments.ndjson",
@@ -194,7 +200,7 @@ class TraceRun:
 
     def stage(self, stream: str, event: Mapping[str, Any]) -> None:
         """Queue a complete stage event and its lightweight lifecycle record."""
-        copied = dict(event)
+        copied = copy.deepcopy(dict(event))
         self._submit(TraceItem(stream, copied))
         trace = copied.get("timing")
         if not isinstance(trace, Mapping):
@@ -307,6 +313,10 @@ class TraceRun:
             phrase_id = trace.get("phrase_id")
             if isinstance(phrase_id, str):
                 self._translations[phrase_id] = dict(event)
+        elif stream == "speech_queue":
+            phrase_id = trace.get("phrase_id")
+            if isinstance(phrase_id, str):
+                self._speech_queue[phrase_id] = dict(event)
         elif stream == "playback":
             phrase_id = trace.get("phrase_id")
             if isinstance(phrase_id, str):
@@ -360,9 +370,10 @@ class TraceRun:
         phrase_trace = phrase.get("timing", {}) if phrase else {}
         phrase_id = phrase_trace.get("phrase_id") if isinstance(phrase_trace, Mapping) else None
         translation = self._translations.get(phrase_id) if isinstance(phrase_id, str) else None
+        speech_queue = self._speech_queue.get(phrase_id) if isinstance(phrase_id, str) else None
         playback = self._playback.get(phrase_id) if isinstance(phrase_id, str) else None
         queue_depths = dict(source_trace.get("queue_depths", {})) if isinstance(source_trace, Mapping) else {}
-        for downstream in (phrase, translation, playback):
+        for downstream in (phrase, translation, speech_queue, playback):
             trace = downstream.get("timing", {}) if downstream else {}
             if isinstance(trace, Mapping):
                 timestamps.update({key: value for key, value in trace.get("timestamps_ns", {}).items() if value is not None})
@@ -375,6 +386,9 @@ class TraceRun:
             "vad_duration_ms": milliseconds(timestamps["vad_detected_start"], timestamps["vad_segment_closed"]),
             "asr_processing_duration_ms": milliseconds(timestamps["asr_start"], timestamps["asr_complete"]),
             "translation_processing_duration_ms": milliseconds(timestamps["translation_start"], timestamps["translation_complete"]),
+            "translation_available_latency_ms": milliseconds(timestamps["source_audio_end"], timestamps["translation_complete"]),
+            "speech_queue_wait_ms": milliseconds(timestamps["speech_enqueued"], timestamps["speech_dequeued"]),
+            "audio_skipped_latency_ms": milliseconds(timestamps["source_audio_end"], timestamps["audio_skipped"]),
             "tts_processing_duration_ms": milliseconds(timestamps["tts_start"], timestamps["tts_complete"]),
             "time_to_first_tts_audio_ms": milliseconds(timestamps["tts_start"], timestamps["tts_first_audio"]),
             "playback_duration_ms": milliseconds(timestamps["playback_start"], timestamps["playback_complete"]),
@@ -395,9 +409,15 @@ class TraceRun:
         ):
             duration = milliseconds(start, end)
             derived[name] = duration / source_duration if duration is not None and source_duration else None
+        speech_trace = speech_queue.get("timing", {}) if speech_queue else {}
+        playback_trace = playback.get("timing", {}) if playback else {}
+        audio_state = (
+            speech_trace.get("audio_state") if isinstance(speech_trace, Mapping) else None
+        ) or (playback_trace.get("audio_state") if isinstance(playback_trace, Mapping) else None)
         completion = (
-            "completed"
-            if timestamps["playback_complete"] is not None
+            "audio_skipped" if audio_state == "skipped" or timestamps["audio_skipped"] is not None
+            else "completed" if timestamps["playback_complete"] is not None
+            else "playback_failed" if audio_state == "failed"
             else "interrupted" if status == "interrupted" else "incomplete"
         )
         return {
@@ -409,6 +429,8 @@ class TraceRun:
             "source_end_ms": source.get("end_ms"),
             "timestamps_ns": timestamps,
             "queue_depths": queue_depths,
+            "audio_state": audio_state,
+            "audio_skip_reason": speech_trace.get("audio_skip_reason") if isinstance(speech_trace, Mapping) else None,
             "derived_metrics": derived,
             "completion_state": completion,
         }

@@ -397,6 +397,13 @@ with the Python/WebRTC backend and `--vad-silence-seconds 0.45`. Add
 the shared segmentation/window options from `transcribe-microphone`, plus
 `--input-gain-db`, `--translation-model`, `--piper-model`, and `--output-device`.
 
+Spanish translation and Piper playback run in separate demo workers. Completed
+Spanish text reaches the browser immediately, while Piper remains sequential.
+`--playback-queue-size` sets the number of unstarted Spanish phrases retained
+for audio (default: `3`). Under sustained overload, the demo keeps browser text
+complete but skips the oldest unstarted audio phrase so it does not speak stale
+translations; the operator terminal reports that condition.
+
 The display server binds only to `127.0.0.1`, and all models run locally. Once
 dependencies and models are installed, the demo works without internet access.
 For a real-room test, route English input wirelessly into the Mac and select the
@@ -426,6 +433,7 @@ VAD settings, gain, or stage order.
 | `asr.ndjson` | Final English segment events with source, VAD, and ASR timing. |
 | `phrases.ndjson` | Translation-ready phrase events and all contributing source segments. |
 | `translations.ndjson` | Spanish phrase events with translation timing. |
+| `speech_queue.ndjson` | Spanish speech-job admission, dequeue, and skip observations. |
 | `playback.ndjson` | Piper TTS and output-playback timing. |
 | `timing.ndjson` | Compact lifecycle records for each reached stage boundary. |
 | `segments.ndjson` | One analysis-ready metric record per source segment. |
@@ -438,7 +446,11 @@ fields in `derived_metrics` (`vad_duration_ms`, `asr_processing_duration_ms`,
 `translation_processing_duration_ms`, `tts_processing_duration_ms`,
 `playback_duration_ms`, and the `wait_before_*` fields). `asr_rtf` and
 `tts_rtf` above `1.0` mean that stage took longer than the source segment's
-audio duration.
+audio duration. The decoupled playback trace additionally provides
+`translation_available_latency_ms`, `speech_queue_wait_ms`, and
+`audio_skipped_latency_ms`; inspect `speech_playback` queue depth/age and
+`audio_skipped` completion states to distinguish current browser translation
+from delayed or intentionally skipped Spanish audio.
 
 ### Inspecting demo processes
 

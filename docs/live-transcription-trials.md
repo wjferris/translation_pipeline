@@ -105,6 +105,36 @@ output was nearly two minutes behind the speaker. This indicates backlog over
 the full pipeline rather than a tolerable per-phrase delay and is the highest
 priority issue for the next live evaluation.
 
+### Decoupled playback browser trial (2026-08-23)
+
+After separating translation from Piper playback, a repeatable long-source
+browser run (`2026_08_23_002`) was compared with the prior full-discourse trace
+(`2026_08_23_001`). The run used Silero VAD with `0.35` seconds of silence,
+30 dB input gain, and a Spanish playback-queue capacity of three unstarted
+jobs.
+
+| Measure | Prior run (`001`) | Decoupled run (`002`) |
+| --- | ---: | ---: |
+| Source span | 10.0 min | 12.73 min |
+| Playback-start latency, median | 42.58 s | 3.79 s |
+| Playback-start latency, P95 | 69.75 s | 9.31 s |
+| Playback-start latency, maximum | 73.51 s | 12.56 s |
+| Playback-latency slope | +7.15 s/min | approximately 0 s/min |
+
+The translation worker did not accumulate a wait before translation in the
+second run. Short-lived Spanish playback-queue bursts remained visible, but
+they drained rather than growing through the talk. The queue reached its
+capacity of three and evicted three unstarted speech jobs (affecting four
+source segments); one was a blank-audio cue and two were spoken Spanish
+phrases. Their browser translations were still displayed. The selected default
+capacity remains three: it keeps spoken audio fresh while making any overload
+explicit in the trace instead of letting it become sustained delay.
+
+The run demonstrates that audio output can still have short, bounded jitter,
+but the prior cumulative backlog was removed. Future tuning should compare a
+capacity of four with the same VAD setting, balancing fewer skipped spoken
+phrases against older audio.
+
 ## Known limitations
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.

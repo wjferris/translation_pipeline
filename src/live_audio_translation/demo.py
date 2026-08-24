@@ -20,6 +20,7 @@ import time
 import webbrowser
 from collections import deque
 from collections.abc import Iterator
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,6 +49,7 @@ STATIC_ASSETS = {
     "/assets/demo.js": (WEB_DIR / "demo.js", "text/javascript; charset=utf-8"),
     "/assets/babelfish_favicon.png": (FAVICON_PATH, "image/png"),
 }
+DEFAULT_PLAYBACK_QUEUE_SIZE = 3
 
 class DemoState:
     """Thread-safe, bounded event history for local browser clients."""
@@ -177,6 +179,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--translation-model", default=DEFAULT_MODEL, help=f"Local Ollama model (default: {DEFAULT_MODEL}).")
     parser.add_argument("--piper-model", type=Path, default=DEFAULT_MODEL_PATH, help=f"Local Piper .onnx voice (default: {DEFAULT_MODEL_PATH}).")
     parser.add_argument("--output-device", help="Sounddevice output device name or index for Spanish audio.")
+    parser.add_argument(
+        "--playback-queue-size",
+        type=int,
+        default=DEFAULT_PLAYBACK_QUEUE_SIZE,
+        help=f"Maximum unstarted Spanish phrases awaiting playback (default: {DEFAULT_PLAYBACK_QUEUE_SIZE}).",
+    )
     return parser.parse_args()
 
 
@@ -197,6 +205,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-wait-seconds must be greater than zero.")
     if not -48 <= args.input_gain_db <= 48:
         raise ValueError("--input-gain-db must be between -48 and 48.")
+    if not 1 <= args.playback_queue_size <= 100:
+        raise ValueError("--playback-queue-size must be between 1 and 100.")
 
 
 def microphone_command(args: argparse.Namespace) -> list[str]:
@@ -238,6 +248,64 @@ def iter_json_lines(stream: Iterator[str]) -> Iterator[dict[str, Any]]:
             yield value
 
 
+@dataclass
+class SpeechJob:
+    """One translated phrase awaiting sequential Piper playback."""
+
+    text: str
+    event: dict[str, Any]
+    enqueued_monotonic_ns: int
+
+
+class SpeechJobQueue:
+    """Finite FIFO queue that evicts only unstarted stale speech jobs."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self._jobs: deque[SpeechJob] = deque()
+        self._condition = threading.Condition()
+        self._closed = False
+
+    def enqueue(self, job: SpeechJob) -> tuple[SpeechJob | None, int, float | None]:
+        """Add a job, evicting the oldest unstarted job when capacity is reached."""
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("Spanish playback queue is closed.")
+            evicted = self._jobs.popleft() if len(self._jobs) >= self.capacity else None
+            self._jobs.append(job)
+            self._condition.notify()
+            return evicted, len(self._jobs), self._oldest_age_ms_locked()
+
+    def take(self) -> tuple[SpeechJob | None, int, float | None]:
+        """Wait for the next admitted job, or return none after normal closure."""
+        with self._condition:
+            self._condition.wait_for(lambda: self._jobs or self._closed)
+            if not self._jobs:
+                return None, 0, None
+            job = self._jobs.popleft()
+            return job, len(self._jobs), self._oldest_age_ms_locked()
+
+    def close(self, *, discard: bool) -> list[SpeechJob]:
+        """Stop admission and optionally return unstarted jobs for finalization."""
+        with self._condition:
+            self._closed = True
+            discarded = list(self._jobs) if discard else []
+            if discard:
+                self._jobs.clear()
+            self._condition.notify_all()
+            return discarded
+
+    def snapshot(self) -> tuple[int, float | None]:
+        """Return the unstarted item count and oldest queued age."""
+        with self._condition:
+            return len(self._jobs), self._oldest_age_ms_locked()
+
+    def _oldest_age_ms_locked(self) -> float | None:
+        if not self._jobs:
+            return None
+        return (time.monotonic_ns() - self._jobs[0].enqueued_monotonic_ns) / 1_000_000
+
+
 class DemoPipeline:
     """Fan out local ASR events to the display, translation, and Piper speech."""
 
@@ -250,7 +318,10 @@ class DemoPipeline:
         self.microphone: subprocess.Popen[str] | None = None
         self.buffer: subprocess.Popen[str] | None = None
         self.english_thread: threading.Thread | None = None
-        self.spanish_thread: threading.Thread | None = None
+        self.translation_thread: threading.Thread | None = None
+        self.playback_thread: threading.Thread | None = None
+        self.speech_queue = SpeechJobQueue(getattr(args, "playback_queue_size", DEFAULT_PLAYBACK_QUEUE_SIZE))
+        self._audio_backlog = False
 
     def start(self) -> None:
         """Start the existing ASR and phrase-buffer workers plus fan-out threads."""
@@ -269,9 +340,11 @@ class DemoPipeline:
             env={**worker_environment, PROCESS_TITLE_ENV: "BabelFish ASR"},
         )
         self.english_thread = threading.Thread(target=self._forward_english, name="demo-english")
-        self.spanish_thread = threading.Thread(target=self._translate_and_speak, name="demo-spanish")
+        self.translation_thread = threading.Thread(target=self._translate_and_enqueue, name="demo-translation")
+        self.playback_thread = threading.Thread(target=self._playback_speech, name="demo-playback")
         self.english_thread.start()
-        self.spanish_thread.start()
+        self.translation_thread.start()
+        self.playback_thread.start()
 
     def _forward_english(self) -> None:
         assert self.microphone is not None and self.microphone.stdout is not None
@@ -294,76 +367,131 @@ class DemoPipeline:
             except (BrokenPipeError, OSError):
                 pass
 
-    def _translate_and_speak(self) -> None:
+    def _translate_and_enqueue(self) -> None:
+        """Translate continuously without waiting for prior Spanish audio playback."""
         assert self.buffer is not None and self.buffer.stdout is not None
         client = Client()
-        for event in iter_json_lines(self.buffer.stdout):
-            if self.stop_event.is_set():
+        try:
+            for event in iter_json_lines(self.buffer.stdout):
+                if self.stop_event.is_set():
+                    return
+                self._translate_event(client, event)
+        finally:
+            for job in self.speech_queue.close(discard=self.stop_event.is_set()):
+                self._finalize_unplayed(job, "interrupted")
+
+    def _translate_event(self, client: Client, event: dict[str, Any]) -> None:
+        """Translate one phrase, publish it, and hand it to the audio stage."""
+        timing: dict[str, Any] | None = None
+        if self.trace is not None:
+            self.trace.stage("phrases", event)
+            timing = copy.deepcopy(event.get("timing", {}))
+            if not isinstance(timing, dict):
+                timing = {}
+            phrase_id = timing.get("phrase_id", event.get("id"))
+            source_segment_ids = timing.get("source_segment_ids", event.get("source_ids", []))
+            timestamps = timing.setdefault("timestamps_ns", {})
+            timestamps["translation_start"] = self.trace.now_ns()
+            timing["phrase_id"] = phrase_id
+            timing["source_segment_ids"] = source_segment_ids
+            timing.setdefault("queue_depths", {})["translation"] = {"physical": None, "logical_pending": 1}
+        self.state.publish("status", "Translating…")
+        try:
+            spanish = translate(client, self.args.translation_model, event["text"])
+        except Exception as error:
+            print(f"Translation failed: {error}", file=sys.stderr)
+            self.state.publish("status", "Translation unavailable — see operator terminal.")
+            return
+        translated_event: dict[str, Any] = {
+            "id": event.get("id"), "source_ids": event.get("source_ids", []),
+            "start_ms": event.get("start_ms"), "end_ms": event.get("end_ms"), "text": spanish,
+        }
+        if timing is not None:
+            timing["timestamps_ns"]["translation_complete"] = self.trace.now_ns()
+            translated_event["timing"] = timing
+            self.trace.stage("translations", translated_event)
+        self.state.publish("spanish", spanish)
+        job = SpeechJob(spanish, translated_event, time.monotonic_ns())
+        try:
+            evicted, depth, oldest_age_ms = self.speech_queue.enqueue(job)
+        except RuntimeError:
+            self._finalize_unplayed(job, "interrupted")
+            return
+        if evicted is not None:
+            self._finalize_unplayed(evicted, "playback_queue_full", depth, oldest_age_ms)
+            if not self._audio_backlog:
+                print("Spanish audio backlog: stale unstarted phrases are being skipped.", file=sys.stderr)
+                self._audio_backlog = True
+        self._record_speech_queue(job, "speech_enqueued", depth, oldest_age_ms)
+
+    def _playback_speech(self) -> None:
+        """Own sequential Piper/output work independently of translation."""
+        while True:
+            job, depth, oldest_age_ms = self.speech_queue.take()
+            if job is None:
                 return
-            timing: dict[str, Any] | None = None
-            if self.trace is not None:
-                self.trace.stage("phrases", event)
-                timing = copy.deepcopy(event.get("timing", {}))
-                if not isinstance(timing, dict):
-                    timing = {}
-                phrase_id = timing.get("phrase_id", event.get("id"))
-                source_segment_ids = timing.get("source_segment_ids", event.get("source_ids", []))
-                timestamps = timing.setdefault("timestamps_ns", {})
-                timestamps["translation_start"] = self.trace.now_ns()
-                timing["phrase_id"] = phrase_id
-                timing["source_segment_ids"] = source_segment_ids
-                timing.setdefault("queue_depths", {})["translation"] = {
-                    "physical": None,
-                    "logical_pending": 1,
-                }
-            self.state.publish("status", "Translating…")
-            try:
-                spanish = translate(client, self.args.translation_model, event["text"])
-            except Exception as error:
-                print(f"Translation failed: {error}", file=sys.stderr)
-                self.state.publish("status", "Translation unavailable — see operator terminal.")
-                continue
-            translated_event: dict[str, Any] | None = None
-            if self.trace is not None and timing is not None:
-                timing["timestamps_ns"]["translation_complete"] = self.trace.now_ns()
-                translated_event = {
-                    "id": event.get("id"),
-                    "source_ids": event.get("source_ids", []),
-                    "start_ms": event.get("start_ms"),
-                    "end_ms": event.get("end_ms"),
-                    "text": spanish,
-                    "timing": timing,
-                }
-                self.trace.stage("translations", translated_event)
-            self.state.publish("spanish", spanish)
+            self._record_speech_queue(job, "speech_dequeued", depth, oldest_age_ms)
             self.state.publish("status", "Speaking Spanish…")
-            playback_event = copy.deepcopy(translated_event) if translated_event is not None else None
-            if playback_event is not None:
-                playback_event["timing"].setdefault("queue_depths", {})["tts_playback"] = {
-                    "physical": None,
-                    "logical_pending": 1,
-                }
 
             def mark_timing(boundary: str) -> None:
-                if playback_event is not None and self.trace is not None:
-                    playback_event["timing"]["timestamps_ns"][boundary] = self.trace.now_ns()
+                if self.trace is not None:
+                    timing = job.event.get("timing")
+                    if isinstance(timing, dict):
+                        timing.setdefault("timestamps_ns", {})[boundary] = self.trace.now_ns()
 
             try:
-                play_text(
-                    self.voice,
-                    spanish,
-                    self.args.output_device,
-                    on_timing=mark_timing if playback_event is not None else None,
-                )
+                play_text(self.voice, job.text, self.args.output_device, on_timing=mark_timing if self.trace else None)
             except Exception as error:
-                if self.trace is not None and playback_event is not None:
-                    self.trace.stage("playback", playback_event)
+                self._record_playback(job, "failed", str(error))
                 print(f"Spanish audio failed: {error}", file=sys.stderr)
                 self.state.publish("status", "Audio unavailable — see operator terminal.")
-                continue
-            if self.trace is not None and playback_event is not None:
-                self.trace.stage("playback", playback_event)
+            else:
+                self._record_playback(job, "completed")
+            depth, _ = self.speech_queue.snapshot()
+            if self._audio_backlog and depth == 0:
+                print("Spanish audio backlog recovered.", file=sys.stderr)
+                self._audio_backlog = False
             self.state.publish("status", "Listening…")
+
+    def _record_speech_queue(
+        self, job: SpeechJob, boundary: str, depth: int, oldest_age_ms: float | None
+    ) -> None:
+        if self.trace is None:
+            return
+        timing = job.event.get("timing")
+        if not isinstance(timing, dict):
+            return
+        timing.setdefault("timestamps_ns", {})[boundary] = self.trace.now_ns()
+        timing.setdefault("queue_depths", {})["speech_playback"] = {
+            "physical": None, "logical_pending": depth, "oldest_queued_age_ms": oldest_age_ms,
+        }
+        self.trace.stage("speech_queue", job.event)
+
+    def _finalize_unplayed(
+        self, job: SpeechJob, reason: str, depth: int | None = None, oldest_age_ms: float | None = None
+    ) -> None:
+        if self.trace is None:
+            return
+        timing = job.event.get("timing")
+        if not isinstance(timing, dict):
+            return
+        timing.setdefault("timestamps_ns", {})["audio_skipped"] = self.trace.now_ns()
+        timing["audio_state"] = "skipped"
+        timing["audio_skip_reason"] = reason
+        timing.setdefault("queue_depths", {})["speech_playback"] = {
+            "physical": None, "logical_pending": depth, "oldest_queued_age_ms": oldest_age_ms,
+        }
+        self.trace.stage("speech_queue", job.event)
+
+    def _record_playback(self, job: SpeechJob, state: str, error: str | None = None) -> None:
+        if self.trace is None:
+            return
+        timing = job.event.get("timing")
+        if isinstance(timing, dict):
+            timing["audio_state"] = state
+            if error is not None:
+                timing["audio_error"] = error
+        self.trace.stage("playback", job.event)
 
     def stop(self) -> None:
         """Stop intake, then wait for Piper/native audio work to return safely."""
@@ -379,9 +507,13 @@ class DemoPipeline:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-        for worker in (self.english_thread, self.spanish_thread):
+        for worker in (self.english_thread, self.translation_thread):
             if worker is not None and worker.is_alive():
                 worker.join()
+        for job in self.speech_queue.close(discard=True):
+            self._finalize_unplayed(job, "interrupted")
+        if self.playback_thread is not None and self.playback_thread.is_alive():
+            self.playback_thread.join()
 
 
 def main() -> None:
