@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +27,11 @@ import webrtcvad
 from silero_vad import VADIterator, load_silero_vad
 
 from live_audio_translation.process_identity import set_demo_process_title
+from live_audio_translation.timing_trace import (
+    empty_timestamps,
+    relative_monotonic_ns,
+    trace_timebase_from_environment,
+)
 from live_audio_translation.transcribe_whisper import (
     TranscriptSegment,
     TranscriptToken,
@@ -52,6 +57,51 @@ class AudioWindow:
     audio: np.ndarray
     start_ms: int
     end_ms: int
+    timing: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class CaptureClock:
+    """Shared capture origin used to express source boundaries on the demo timeline."""
+
+    timebase_ns: int | None
+    started_ns: int | None = None
+
+    def at_sample(self, sample: int) -> int | None:
+        if self.timebase_ns is None or self.started_ns is None:
+            return None
+        return max(0, self.started_ns + round(sample * 1_000_000_000 / SAMPLE_RATE) - self.timebase_ns)
+
+
+def audio_window(
+    audio: np.ndarray,
+    start_sample: int,
+    end_sample: int,
+    *,
+    segment_id: str,
+    clock: CaptureClock,
+    vad_detected_sample: int | None = None,
+    vad_closed_sample: int | None = None,
+) -> AudioWindow:
+    """Create a source segment with optional session-relative trace metadata."""
+    timing: dict[str, object] = {}
+    if clock.timebase_ns is not None:
+        timestamps = empty_timestamps()
+        timestamps["source_audio_start"] = clock.at_sample(start_sample)
+        timestamps["source_audio_end"] = clock.at_sample(end_sample)
+        timestamps["vad_detected_start"] = clock.at_sample(vad_detected_sample) if vad_detected_sample is not None else None
+        timestamps["vad_segment_closed"] = clock.at_sample(vad_closed_sample) if vad_closed_sample is not None else None
+        timing = {
+            "segment_id": segment_id,
+            "timestamps_ns": timestamps,
+            "queue_depths": {"asr": {"enqueue": None, "dequeue": None}},
+        }
+    return AudioWindow(
+        audio=audio,
+        start_ms=round(start_sample * 1000 / SAMPLE_RATE),
+        end_ms=round(end_sample * 1000 / SAMPLE_RATE),
+        timing=timing,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,6 +250,7 @@ class WindowSegmenter:
         stop_event: threading.Event,
         window_seconds: float,
         stride_seconds: float,
+        clock: CaptureClock | None = None,
     ) -> None:
         self.blocks = blocks
         self.windows = windows
@@ -207,8 +258,15 @@ class WindowSegmenter:
         self.stop_event = stop_event
         self.window_samples = round(window_seconds * SAMPLE_RATE)
         self.stride_samples = round(stride_seconds * SAMPLE_RATE)
+        self.clock = clock or CaptureClock(None)
+        self.sequence = 0
 
     def put_window(self, window: AudioWindow) -> None:
+        trace = window.timing.get("queue_depths") if window.timing else None
+        if isinstance(trace, dict):
+            asr_queue = trace.get("asr")
+            if isinstance(asr_queue, dict):
+                asr_queue["enqueue"] = self.windows.qsize()
         try:
             self.windows.put_nowait(window)
         except queue.Full:
@@ -235,13 +293,14 @@ class WindowSegmenter:
             received += len(block)
             while received >= next_window_start + self.window_samples:
                 offset = next_window_start - buffer_start
+                self.sequence += 1
                 self.put_window(
-                    AudioWindow(
-                        audio=buffer[offset : offset + self.window_samples].copy(),
-                        start_ms=round(next_window_start * 1000 / SAMPLE_RATE),
-                        end_ms=round(
-                            (next_window_start + self.window_samples) * 1000 / SAMPLE_RATE
-                        ),
+                    audio_window(
+                        buffer[offset : offset + self.window_samples].copy(),
+                        next_window_start,
+                        next_window_start + self.window_samples,
+                        segment_id=f"segment-{self.sequence}",
+                        clock=self.clock,
                     )
                 )
                 next_window_start += self.stride_samples
@@ -266,6 +325,7 @@ class VADSegmenter:
         pre_roll_seconds: float,
         min_phrase_seconds: float,
         max_phrase_seconds: float,
+        clock: CaptureClock | None = None,
     ) -> None:
         self.blocks = blocks
         self.windows = windows
@@ -282,9 +342,17 @@ class VADSegmenter:
         self.pre_roll: deque[np.ndarray] = deque(maxlen=self.pre_roll_frames)
         self.phrase_frames: list[np.ndarray] = []
         self.phrase_start_sample = 0
+        self.vad_detected_sample: int | None = None
         self.trailing_silence = 0
+        self.clock = clock or CaptureClock(None)
+        self.sequence = 0
 
     def put_window(self, window: AudioWindow) -> None:
+        trace = window.timing.get("queue_depths") if window.timing else None
+        if isinstance(trace, dict):
+            asr_queue = trace.get("asr")
+            if isinstance(asr_queue, dict):
+                asr_queue["enqueue"] = self.windows.qsize()
         try:
             self.windows.put_nowait(window)
         except queue.Full:
@@ -306,15 +374,21 @@ class VADSegmenter:
             return
         audio = np.concatenate(self.phrase_frames).reshape(-1, 1)
         if len(audio) >= self.min_phrase_samples:
+            self.sequence += 1
             self.put_window(
-                AudioWindow(
-                    audio=audio,
-                    start_ms=round(self.phrase_start_sample * 1000 / SAMPLE_RATE),
-                    end_ms=round(end_sample * 1000 / SAMPLE_RATE),
+                audio_window(
+                    audio,
+                    self.phrase_start_sample,
+                    end_sample,
+                    segment_id=f"segment-{self.sequence}",
+                    clock=self.clock,
+                    vad_detected_sample=self.vad_detected_sample,
+                    vad_closed_sample=end_sample,
                 )
             )
         self.phrase_frames = []
         self.trailing_silence = 0
+        self.vad_detected_sample = None
 
     def process_frame(self, frame: np.ndarray, frame_start: int) -> None:
         speech = self.is_speech(frame)
@@ -324,6 +398,7 @@ class VADSegmenter:
                 return
             self.phrase_frames = list(self.pre_roll)
             self.phrase_start_sample = frame_start - (len(self.pre_roll) - 1) * self.frame_samples
+            self.vad_detected_sample = frame_start
             self.trailing_silence = 0
             return
 
@@ -354,7 +429,7 @@ class VADSegmenter:
 class SileroSegmenter(VADSegmenter):
     """Continuous local Silero VAD that emits each phrase once."""
 
-    def __init__(self, blocks: queue.Queue[np.ndarray], windows: queue.Queue[AudioWindow], warnings: queue.Queue[str], stop_event: threading.Event, threshold: float, silence_seconds: float, pad_seconds: float, max_phrase_seconds: float) -> None:
+    def __init__(self, blocks: queue.Queue[np.ndarray], windows: queue.Queue[AudioWindow], warnings: queue.Queue[str], stop_event: threading.Event, threshold: float, silence_seconds: float, pad_seconds: float, max_phrase_seconds: float, clock: CaptureClock | None = None) -> None:
         self.blocks, self.windows, self.warnings, self.stop_event = blocks, windows, warnings, stop_event
         self.frame_samples = 512
         self.pending = np.empty(0, dtype=np.float32)
@@ -364,16 +439,25 @@ class SileroSegmenter(VADSegmenter):
         self.history = np.empty(0, dtype=np.float32)
         self.phrase = np.empty(0, dtype=np.float32)
         self.phrase_start_sample = 0
+        self.vad_detected_sample: int | None = None
         self.last_owned_end = 0
         self.iterator_base_sample = 0
         self.iterator = VADIterator(load_silero_vad(onnx=True), threshold=threshold, sampling_rate=SAMPLE_RATE, min_silence_duration_ms=round(silence_seconds * 1000), speech_pad_ms=round(pad_seconds * 1000))
+        self.clock = clock or CaptureClock(None)
+        self.sequence = 0
 
     def finish(self, end_sample: int) -> None:
         if len(self.phrase):
             owned_end = max(self.phrase_start_sample, end_sample)
-            self.put_window(AudioWindow(self.phrase.reshape(-1, 1), round(self.phrase_start_sample * 1000 / SAMPLE_RATE), round(owned_end * 1000 / SAMPLE_RATE)))
+            self.sequence += 1
+            self.put_window(audio_window(
+                self.phrase.reshape(-1, 1), self.phrase_start_sample, owned_end,
+                segment_id=f"segment-{self.sequence}", clock=self.clock,
+                vad_detected_sample=self.vad_detected_sample, vad_closed_sample=owned_end,
+            ))
             self.last_owned_end = owned_end
         self.phrase = np.empty(0, dtype=np.float32)
+        self.vad_detected_sample = None
 
     def run(self) -> None:
         while not self.stop_event.is_set() or not self.blocks.empty():
@@ -388,6 +472,7 @@ class SileroSegmenter(VADSegmenter):
                 self.history = np.concatenate((self.history, frame))[-self.pad_samples:]
                 if event and "start" in event:
                     self.phrase_start_sample = max(self.last_owned_end, event["start"])
+                    self.vad_detected_sample = event["start"]
                     self.phrase = self.history[:-len(frame)].copy()
                 if len(self.phrase): self.phrase = np.concatenate((self.phrase, frame))
                 if len(self.phrase) >= self.max_phrase_samples:
@@ -426,6 +511,7 @@ def transcribe_windows(
     language: str,
     output_format: str,
     silero_vad_model: Path | None = None,
+    timebase_ns: int | None = None,
 ) -> None:
     """Write queued audio to temporary WAV files and emit finalized transcripts."""
     previous = ""
@@ -436,6 +522,17 @@ def transcribe_windows(
             window = windows.get(timeout=0.1)
         except queue.Empty:
             continue
+        timing = dict(window.timing)
+        timestamps = dict(timing.get("timestamps_ns", {}))
+        queue_depths = dict(timing.get("queue_depths", {}))
+        asr_queue = dict(queue_depths.get("asr", {}))
+        asr_queue["dequeue"] = windows.qsize()
+        queue_depths["asr"] = asr_queue
+        if timebase_ns is not None:
+            timestamps["asr_start"] = relative_monotonic_ns(timebase_ns)
+        if timing:
+            timing["timestamps_ns"] = timestamps
+            timing["queue_depths"] = queue_depths
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
             window_path = Path(temp_file.name)
         try:
@@ -457,6 +554,8 @@ def transcribe_windows(
                 transcript = transcribe(
                     window_path, language, show_status=False, cancel_event=stop_event
                 )
+            if timebase_ns is not None:
+                timestamps["asr_complete"] = relative_monotonic_ns(timebase_ns)
             if transcript:
                 new_text = remove_overlap(
                     previous, transcript, trim_single_sentence_word=silero_vad_model is not None
@@ -464,12 +563,15 @@ def transcribe_windows(
                 if new_text:
                     sequence += 1
                     if output_format == "ndjson":
+                        segment_id = timing.get("segment_id", f"segment-{sequence}")
                         event = {
-                            "id": f"segment-{sequence}",
+                            "id": segment_id,
                             "text": new_text,
                             "start_ms": event_start_ms,
                             "end_ms": event_end_ms,
                         }
+                        if timing:
+                            event["timing"] = timing
                         print(json.dumps(event, ensure_ascii=False), flush=True)
                         print(new_text, file=sys.stderr, flush=True)
                     else:
@@ -526,6 +628,8 @@ def main() -> None:
         raise SystemExit(2) from exc
     input_gain = 10 ** (args.input_gain_db / 20)
     input_gain_label = f"{args.input_gain_db:+g}" if args.input_gain_db else "0"
+    trace_timebase_ns = trace_timebase_from_environment()
+    capture_clock = CaptureClock(trace_timebase_ns)
 
     blocks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
     windows: queue.Queue[AudioWindow] = queue.Queue(maxsize=WINDOW_QUEUE_SIZE)
@@ -542,6 +646,7 @@ def main() -> None:
             args.vad_pre_roll_seconds,
             args.vad_min_phrase_seconds,
             args.vad_max_phrase_seconds,
+            capture_clock,
         )
         listening_message = (
             "Listening continuously to the default microphone with local WebRTC VAD "
@@ -549,7 +654,7 @@ def main() -> None:
             f"or {args.vad_max_phrase_seconds:g} seconds maximum. Press Ctrl-C to stop."
         )
     elif args.segmentation == "vad":
-        segmenter = SileroSegmenter(blocks, windows, warnings, stop_event, args.silero_threshold, args.silero_min_silence_seconds, args.silero_speech_pad_seconds, args.silero_max_phrase_seconds)
+        segmenter = SileroSegmenter(blocks, windows, warnings, stop_event, args.silero_threshold, args.silero_min_silence_seconds, args.silero_speech_pad_seconds, args.silero_max_phrase_seconds, capture_clock)
         listening_message = (
             "Listening continuously with stateful local Silero VAD "
             f"at confidence {args.silero_threshold:g}. "
@@ -557,7 +662,7 @@ def main() -> None:
         )
     else:
         segmenter = WindowSegmenter(
-            blocks, windows, warnings, stop_event, args.window_seconds, args.stride_seconds
+            blocks, windows, warnings, stop_event, args.window_seconds, args.stride_seconds, capture_clock
         )
         listening_message = (
             "Listening continuously to the default microphone "
@@ -567,7 +672,7 @@ def main() -> None:
     segmenter_thread = threading.Thread(target=segmenter.run, name="audio-segmenter")
     worker_thread = threading.Thread(
         target=transcribe_windows,
-        args=(windows, warnings, stop_event, args.language, args.output_format),
+        args=(windows, warnings, stop_event, args.language, args.output_format, None, trace_timebase_ns),
         name="whisper-worker",
     )
     segmenter_thread.start()
@@ -583,6 +688,7 @@ def main() -> None:
             blocksize=round(BLOCK_SECONDS * SAMPLE_RATE),
             callback=capture_callback(blocks, warnings, input_gain),
         ):
+            capture_clock.started_ns = time.monotonic_ns()
             while args.duration is None or time.monotonic() - started_at < args.duration:
                 try:
                     while True:

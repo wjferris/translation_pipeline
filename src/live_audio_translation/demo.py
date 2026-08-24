@@ -9,6 +9,7 @@ NDJSON command-line pipeline remains available for troubleshooting.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ from piper.voice import PiperVoice
 
 from live_audio_translation.process_identity import PROCESS_TITLE_ENV, set_demo_process_title
 from live_audio_translation.speak_stream import DEFAULT_MODEL_PATH, play_text
+from live_audio_translation.timing_trace import TRACE_TIMEBASE_ENV, TraceRun, run_configuration
 from live_audio_translation.transcribe_whisper import (
     default_whisper_model,
     validate_silero_vad,
@@ -150,6 +152,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--port", type=int, default=8765, help="Local browser port (default: 8765).")
     parser.add_argument("--no-open-browser", action="store_true", help="Print the local URL without opening it.")
+    parser.add_argument("--no-timing-trace", action="store_true", help="Disable the default timing trace for a controlled baseline run.")
     parser.add_argument("--language", default="en", help="Spoken input language (default: en).")
     parser.add_argument(
         "--segmentation", choices=("fixed", "vad"), default="vad", help="ASR segmentation method (default: vad)."
@@ -238,8 +241,11 @@ def iter_json_lines(stream: Iterator[str]) -> Iterator[dict[str, Any]]:
 class DemoPipeline:
     """Fan out local ASR events to the display, translation, and Piper speech."""
 
-    def __init__(self, args: argparse.Namespace, state: DemoState, voice: PiperVoice) -> None:
+    def __init__(
+        self, args: argparse.Namespace, state: DemoState, voice: PiperVoice, trace: TraceRun | None
+    ) -> None:
         self.args, self.state, self.voice = args, state, voice
+        self.trace = trace
         self.stop_event = threading.Event()
         self.microphone: subprocess.Popen[str] | None = None
         self.buffer: subprocess.Popen[str] | None = None
@@ -248,14 +254,19 @@ class DemoPipeline:
 
     def start(self) -> None:
         """Start the existing ASR and phrase-buffer workers plus fan-out threads."""
+        worker_environment = dict(os.environ)
+        if self.trace is not None:
+            worker_environment[TRACE_TIMEBASE_ENV] = str(self.trace.timebase_ns)
+        else:
+            worker_environment.pop(TRACE_TIMEBASE_ENV, None)
         self.buffer = subprocess.Popen(
             [sys.executable, "-m", "live_audio_translation.buffer_phrases", "--max-wait-seconds", str(self.args.max_wait_seconds)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-            env={**os.environ, PROCESS_TITLE_ENV: "BabelFish Phrase Buffer"},
+            env={**worker_environment, PROCESS_TITLE_ENV: "BabelFish Phrase Buffer"},
         )
         self.microphone = subprocess.Popen(
             microphone_command(self.args), stdout=subprocess.PIPE, text=True, bufsize=1,
-            env={**os.environ, PROCESS_TITLE_ENV: "BabelFish ASR"},
+            env={**worker_environment, PROCESS_TITLE_ENV: "BabelFish ASR"},
         )
         self.english_thread = threading.Thread(target=self._forward_english, name="demo-english")
         self.spanish_thread = threading.Thread(target=self._translate_and_speak, name="demo-spanish")
@@ -269,6 +280,8 @@ class DemoPipeline:
             for event in iter_json_lines(self.microphone.stdout):
                 if self.stop_event.is_set():
                     return
+                if self.trace is not None:
+                    self.trace.stage("asr", event)
                 self.state.publish("english", event["text"])
                 self.buffer.stdin.write(json.dumps(event, ensure_ascii=False) + "\n")
                 self.buffer.stdin.flush()
@@ -287,6 +300,22 @@ class DemoPipeline:
         for event in iter_json_lines(self.buffer.stdout):
             if self.stop_event.is_set():
                 return
+            timing: dict[str, Any] | None = None
+            if self.trace is not None:
+                self.trace.stage("phrases", event)
+                timing = copy.deepcopy(event.get("timing", {}))
+                if not isinstance(timing, dict):
+                    timing = {}
+                phrase_id = timing.get("phrase_id", event.get("id"))
+                source_segment_ids = timing.get("source_segment_ids", event.get("source_ids", []))
+                timestamps = timing.setdefault("timestamps_ns", {})
+                timestamps["translation_start"] = self.trace.now_ns()
+                timing["phrase_id"] = phrase_id
+                timing["source_segment_ids"] = source_segment_ids
+                timing.setdefault("queue_depths", {})["translation"] = {
+                    "physical": None,
+                    "logical_pending": 1,
+                }
             self.state.publish("status", "Translating…")
             try:
                 spanish = translate(client, self.args.translation_model, event["text"])
@@ -294,14 +323,46 @@ class DemoPipeline:
                 print(f"Translation failed: {error}", file=sys.stderr)
                 self.state.publish("status", "Translation unavailable — see operator terminal.")
                 continue
+            translated_event: dict[str, Any] | None = None
+            if self.trace is not None and timing is not None:
+                timing["timestamps_ns"]["translation_complete"] = self.trace.now_ns()
+                translated_event = {
+                    "id": event.get("id"),
+                    "source_ids": event.get("source_ids", []),
+                    "start_ms": event.get("start_ms"),
+                    "end_ms": event.get("end_ms"),
+                    "text": spanish,
+                    "timing": timing,
+                }
+                self.trace.stage("translations", translated_event)
             self.state.publish("spanish", spanish)
             self.state.publish("status", "Speaking Spanish…")
+            playback_event = copy.deepcopy(translated_event) if translated_event is not None else None
+            if playback_event is not None:
+                playback_event["timing"].setdefault("queue_depths", {})["tts_playback"] = {
+                    "physical": None,
+                    "logical_pending": 1,
+                }
+
+            def mark_timing(boundary: str) -> None:
+                if playback_event is not None and self.trace is not None:
+                    playback_event["timing"]["timestamps_ns"][boundary] = self.trace.now_ns()
+
             try:
-                play_text(self.voice, spanish, self.args.output_device)
+                play_text(
+                    self.voice,
+                    spanish,
+                    self.args.output_device,
+                    on_timing=mark_timing if playback_event is not None else None,
+                )
             except Exception as error:
+                if self.trace is not None and playback_event is not None:
+                    self.trace.stage("playback", playback_event)
                 print(f"Spanish audio failed: {error}", file=sys.stderr)
                 self.state.publish("status", "Audio unavailable — see operator terminal.")
                 continue
+            if self.trace is not None and playback_event is not None:
+                self.trace.stage("playback", playback_event)
             self.state.publish("status", "Listening…")
 
     def stop(self) -> None:
@@ -333,20 +394,26 @@ def main() -> None:
         print(f"Demo cannot start: {error}", file=sys.stderr)
         raise SystemExit(2) from error
 
+    trace: TraceRun | None = None
     try:
         voice = PiperVoice.load(args.piper_model)
         state = DemoState()
         state.publish("status", "Loading local translation demo…")
         server = DemoHTTPServer(("127.0.0.1", args.port), make_handler(state))
+        if not args.no_timing_trace:
+            trace = TraceRun.create(run_configuration(args))
     except (OSError, RuntimeError, ValueError) as error:
         print(f"Demo cannot start: {error}", file=sys.stderr)
         raise SystemExit(2) from error
 
-    pipeline = DemoPipeline(args, state, voice)
+    pipeline = DemoPipeline(args, state, voice, trace)
     url = f"http://127.0.0.1:{args.port}"
+    run_status = "completed"
     try:
         pipeline.start()
         state.publish("status", "Listening…")
+        if trace is not None:
+            print(f"Timing trace: {trace.directory}", file=sys.stderr)
         print(f"Local demo running at {url}. Press Ctrl-C to stop.", file=sys.stderr)
         print(
             f"BabelFish session and process group: {os.getpgrp()} (demo PID {os.getpid()}; "
@@ -357,9 +424,14 @@ def main() -> None:
             webbrowser.open(url)
         server.serve_forever()
     except KeyboardInterrupt:
+        run_status = "interrupted"
         print("\nStopping local browser demo...", file=sys.stderr)
     finally:
         pipeline.stop()
+        if trace is not None:
+            trace.close(run_status)
+            if trace.diagnostic_error:
+                print(f"Timing trace incomplete: {trace.diagnostic_error}", file=sys.stderr)
         state.close()
         server.shutdown()
         server.server_close()

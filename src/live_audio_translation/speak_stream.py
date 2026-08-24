@@ -12,7 +12,7 @@ import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 import numpy as np
 import sounddevice as sd
@@ -49,11 +49,20 @@ def validate_event(value: Any) -> dict[str, Any]:
     return value
 
 
-def play_text(voice: PiperVoice, text: str, output_device: str | None) -> None:
+def play_text(
+    voice: PiperVoice,
+    text: str,
+    output_device: str | None,
+    on_timing: Callable[[str], None] | None = None,
+) -> None:
     """Synthesize one phrase and write Piper's PCM chunks to an audio device."""
     stream: sd.OutputStream | None = None
+    if on_timing is not None:
+        on_timing("tts_start")
     try:
         for chunk in voice.synthesize(text):
+            if stream is None and on_timing is not None:
+                on_timing("tts_first_audio")
             audio = np.asarray(chunk.audio_float_array, dtype=np.float32)
             if audio.ndim == 1:
                 audio = audio.reshape(-1, 1)
@@ -65,11 +74,17 @@ def play_text(voice: PiperVoice, text: str, output_device: str | None) -> None:
                     device=output_device,
                 )
                 stream.start()
+                if on_timing is not None:
+                    on_timing("playback_start")
             stream.write(audio)
+        if on_timing is not None:
+            on_timing("tts_complete")
     finally:
         if stream is not None:
             stream.stop()
             stream.close()
+            if on_timing is not None:
+                on_timing("playback_complete")
 
 
 def run(

@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any, TextIO
 
 from live_audio_translation.process_identity import set_demo_process_title
+from live_audio_translation.timing_trace import relative_monotonic_ns, trace_timebase_from_environment
 
 
 SENTENCE_END = re.compile(r"[.!?][\"')\]]*")
@@ -63,14 +64,17 @@ def trim_repeated_boundary(previous: str, current: str) -> str:
 class PhraseBuffer:
     """Accumulate English events and emit translation-ready phrase events."""
 
-    def __init__(self) -> None:
+    def __init__(self, timebase_ns: int | None = None) -> None:
         self.text = ""
         self.source_ids: list[Any] = []
+        self.source_segment_ids: list[str] = []
         self.start_ms: Any = None
         self.end_ms: Any = None
         self.first_received_at: float | None = None
+        self.first_received_ns: int | None = None
         self.sequence = 0
         self.previous_input = ""
+        self.timebase_ns = timebase_ns
 
     def add(self, event: Mapping[str, Any], now: float) -> list[dict[str, Any]]:
         """Append one finalized ASR event and release any complete sentence."""
@@ -86,12 +90,18 @@ class PhraseBuffer:
     def _add_metadata(self, event: Mapping[str, Any], now: float) -> None:
         if self.first_received_at is None:
             self.first_received_at = now
+            self.first_received_ns = relative_monotonic_ns(self.timebase_ns)
         if "id" in event:
             self.source_ids.append(event["id"])
         if self.start_ms is None and "start_ms" in event:
             self.start_ms = event["start_ms"]
         if "end_ms" in event:
             self.end_ms = event["end_ms"]
+        trace = event.get("timing")
+        if isinstance(trace, Mapping) and isinstance(trace.get("segment_id"), str):
+            self.source_segment_ids.append(trace["segment_id"])
+        elif isinstance(event.get("id"), str):
+            self.source_segment_ids.append(event["id"])
 
     def release_completed(self, now: float) -> list[dict[str, Any]]:
         matches = list(SENTENCE_END.finditer(self.text))
@@ -127,12 +137,23 @@ class PhraseBuffer:
             result["start_ms"] = self.start_ms
         if self.end_ms is not None:
             result["end_ms"] = self.end_ms
+        if self.timebase_ns is not None:
+            result["timing"] = {
+                "phrase_id": result["id"],
+                "source_segment_ids": self.source_segment_ids.copy(),
+                "timestamps_ns": {
+                    "phrase_buffer_received": self.first_received_ns,
+                    "phrase_buffer_released": relative_monotonic_ns(self.timebase_ns),
+                },
+                "queue_depths": {"phrase_buffer": {"physical": None}},
+            }
         return result
 
     def _reset(self, tail: str, now: float) -> None:
-        self.text, self.source_ids = tail, []
+        self.text, self.source_ids, self.source_segment_ids = tail, [], []
         self.start_ms = self.end_ms = None
         self.first_received_at = now if tail else None
+        self.first_received_ns = relative_monotonic_ns(self.timebase_ns) if tail else None
 
 
 def read_lines(input_stream: TextIO, lines: queue.Queue[object]) -> None:
@@ -158,7 +179,7 @@ def run(max_wait_seconds: float, *, input_stream: TextIO = sys.stdin, output_str
     """Run the long-lived NDJSON phrase-buffer process until input closes."""
     lines: queue.Queue[object] = queue.Queue()
     threading.Thread(target=read_lines, args=(input_stream, lines), daemon=True).start()
-    buffer = PhraseBuffer()
+    buffer = PhraseBuffer(trace_timebase_from_environment())
     line_number = 0
     while True:
         try:
