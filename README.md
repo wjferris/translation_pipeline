@@ -143,6 +143,12 @@ also included as `src/resources/voxtral-winning-call.mp3`.
 
 ## Live microphone transcription
 
+### Beta version
+
+![Beta version](docs/beta-version.png)
+
+[Watch the beta-version demo](docs/IMG_1076.MOV)
+
 Start the local microphone process with:
 
 ```sh

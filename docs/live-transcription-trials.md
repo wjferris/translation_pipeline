@@ -3,6 +3,12 @@
 **Dates:** 2026-08-08 through 2026-08-14
 **Status:** Early local prototype observations; not a production configuration.
 
+## Beta version
+
+![Beta version](beta-version.png)
+
+[Watch the beta-version demo](IMG_1076.MOV)
+
 ## Setup used
 
 - Source-built upstream Whisper CLI (`whisper.cpp`) available as `whisper` on `PATH`
