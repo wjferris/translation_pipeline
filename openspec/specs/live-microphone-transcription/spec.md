@@ -44,6 +44,36 @@ The system SHALL provide an actionable standard-error message when the default m
 - **WHEN** macOS denies microphone access to the launching application
 - **THEN** the command SHALL exit with a non-zero status and tell the user to grant microphone permission
 
+### Requirement: Condition local Whisper with bounded prior English context
+The system SHALL retain a bounded history of finalized, emitted English ASR
+segments during one `transcribe-microphone` session and SHALL supply the
+selected recent history to each later local Whisper invocation as decoder
+context. The current segment's audio SHALL remain the source of its transcript,
+and prior context SHALL NOT be emitted as part of a new event unless Whisper
+recognizes corresponding current audio.
+
+#### Scenario: Transcribe a later finalized segment with context
+- **WHEN** a prior English ASR segment has been finalized and emitted and the
+  next microphone segment is sent to Whisper with context enabled
+- **THEN** the system SHALL pass the bounded prior English text to Whisper as
+  decoder context before transcribing the current audio segment
+
+#### Scenario: Start a fresh session
+- **WHEN** `transcribe-microphone` starts a new process
+- **THEN** the system SHALL begin with an empty prior-English context history
+  and SHALL transcribe its first segment without preceding transcript context
+
+#### Scenario: Disable Whisper phrase context
+- **WHEN** an operator sets the Whisper context length to `0`
+- **THEN** the system SHALL not supply prior English phrase text to Whisper and
+  SHALL otherwise preserve the existing transcription behavior
+
+#### Scenario: Exclude discarded transcript text
+- **WHEN** a Whisper result is removed by overlap reconciliation, rejected as a
+  non-speech cue, or not emitted as a finalized English segment
+- **THEN** the system SHALL not add that text to the prior-English context
+  history
+
 ### Requirement: Configure local microphone input gain
 The system SHALL allow `transcribe-microphone` callers to set `--input-gain-db` as a floating-point gain from -48 dB through +48 dB, inclusive. The option SHALL default to `0 dB`. Before the system queues each captured normalized microphone block for fixed-window or VAD segmentation, it SHALL multiply the block by the linear factor `10 ** (input_gain_db / 20)` and clip every output sample to the inclusive range `[-1.0, 1.0]`. The system SHALL write the selected input gain to standard error in its startup status.
 

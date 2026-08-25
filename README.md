@@ -193,6 +193,50 @@ not modify the macOS device setting.
 If Whisper cannot keep up, the command reports a backlog warning and discards
 older pending windows to remain close to live output.
 
+### Paired video translation evaluation
+
+The paired fixtures in `tests/videos/` contain an English video and a Spanish
+translation of the same talk. Each has an embedded subtitle track; the
+Spanish subtitles are used as the human-produced baseline. Replay the English
+audio through the VAD/Whisper path, translate the resulting events with local
+Ollama, and write a comparison report with:
+
+```sh
+source .env
+uv run python tools/evaluate_video_translation.py \
+  tests/videos/2026-04-2030-gary-e-stevenson-360p-eng.mp4 \
+  tests/videos/2026-04-2030-gary-e-stevenson-360p-spa.mp4 \
+  --output-dir evaluation/video-translation-gary-stevenson
+```
+
+The output includes `comparison.md`, the extracted Spanish baseline subtitles,
+English ASR events, translated Spanish events, and a manifest. The evaluation
+uses the same local Whisper and `translategemma:4b` defaults as the live demo;
+make sure Whisper, its model, Ollama, and the model are available first.
+
+### Cross-phrase model context
+
+The live ASR and translation workers retain only short, in-memory context for
+one local session. Whisper receives the most recent finalized English ASR
+phrase as a decoder prompt; TranslationGemma receives the two most recent
+completed English/Spanish phrase pairs as Ollama chat history. The current
+audio and current English phrase remain the sources of new output, and no
+context text is printed or written to the timing trace.
+
+Use `0` to return to isolated per-phrase processing:
+
+```sh
+uv run transcribe-microphone --whisper-context-phrases 0 --output-format ndjson | \
+  uv run buffer-phrases | \
+  uv run translate-stream --translation-context-phrases 0
+```
+
+The default values are `--whisper-context-phrases 1` and
+`--translation-context-phrases 2`. Context is reset whenever either worker
+starts. Both histories are deliberately bounded (`320` characters for Whisper
+and `1,200` total characters for TranslationGemma) to limit latency and stale
+topic bias. The browser `demo` command accepts and forwards both options.
+
 ### Pause-based VAD experiment
 
 The fixed 5-second/every-4-seconds mode remains the baseline. To test local
@@ -244,6 +288,8 @@ The stateful implementation uses the locally installed `silero-vad` Python packa
 | `--vad-max-phrase-seconds 10` | `10` | Forced split for continuous speech without a pause. |
 | `--vad-aggressiveness 0`–`3` | `2` | VAD sensitivity; begin with the default unless it misses quiet speech or reacts to noise. |
 | `--input-gain-db 30` | `0` | Local microphone gain before VAD and Whisper; accepts `-48` through `48` dB and clips samples that exceed the supported range. |
+| `--whisper-context-phrases N` | `1` | Finalized English ASR phrases retained as a short local Whisper decoder prompt; `0` disables. |
+| `--translation-context-phrases N` | `2` | Completed English/Spanish phrase pairs retained as local TranslationGemma chat history; `0` disables. |
 | `--output-format ndjson` | `text` | Send machine-readable finalized English events to the translation pipeline. |
 | `--duration 6` | unlimited | Stop automatically after a short microphone test. |
 

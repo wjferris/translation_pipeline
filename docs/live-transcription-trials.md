@@ -141,6 +141,58 @@ but the prior cumulative backlog was removed. Future tuning should compare a
 capacity of four with the same VAD setting, balancing fewer skipped spoken
 phrases against older audio.
 
+### Cross-phrase context paired-video trial (2026-08-24)
+
+The Gary E. Stevenson paired-video evaluator was run twice with the same WebRTC
+VAD replay, Whisper model, and `translategemma:4b` model. The baseline disabled
+both histories; the context run supplied one prior finalized English phrase to
+Whisper and two completed English/Spanish pairs to TranslationGemma.
+
+| Measure | No context | Context enabled |
+| --- | ---: | ---: |
+| Pipeline Spanish events | 90 | 90 |
+| Whole-document normalized similarity | 10.0% | 12.8% |
+| Mean per-event normalized similarity | 62.7% | 63.4% |
+| Median per-event normalized similarity | 64.3% | 64.5% |
+| ASR model processing | 87.70 s | 94.61 s |
+| Translation model processing | 56.12 s | 62.19 s |
+| Total model processing | 143.82 s | 156.81 s |
+
+The whole-document score remains unsuitable as a quality verdict because the
+pipeline and baseline use different phrase boundaries. The small per-event
+gain was semantically mixed. Context corrected the baggage claim-check phrase
+and changed the erroneous `transmisión en vivo` (live broadcast) to
+`ministerio` (ministry), but it also introduced unsupported continuations such
+as `Katmandú y Katmandú` and `esto es todo` (this is all). The added context
+increased measured model processing by 12.98 seconds, approximately 9%.
+
+Keep context configurable and retain the `0` opt-out for controlled runs. The
+next evaluation should isolate Whisper context from TranslationGemma context
+and test shorter Whisper prompts before treating the default context settings
+as a reliable accuracy improvement.
+
+#### Translation-only context follow-up
+
+A third run disabled Whisper context and retained two completed phrase pairs
+for TranslationGemma. English ASR output was identical to the no-context run
+for all 90 events, confirming that this configuration does not introduce the
+Whisper prompt regressions seen above. Spanish output changed for 75 events.
+
+| Measure | No context | Translation context only |
+| --- | ---: | ---: |
+| Whole-document normalized similarity | 10.0% | 13.2% |
+| Mean per-event normalized similarity | 62.7% | 64.6% |
+| Median per-event normalized similarity | 64.3% | 66.6% |
+| Translation model processing | 56.12 s | 74.12 s |
+| Total model processing | 143.82 s | 159.01 s |
+
+Translation-only context improved the phrase-level comparison more than the
+combined context run, including a better baggage claim-check translation, but
+it added approximately 18 seconds (32%) of translation processing. It remains
+an experimental quality/latency trade-off. The next live demo should use
+`--whisper-context-phrases 0 --translation-context-phrases 2` and be reviewed
+for listener comprehension and end-to-end delay.
+
 ## Known limitations
 
 - The initial implementation uses the default macOS input device. It does not yet list or explicitly select audio interfaces/mixer inputs.

@@ -42,7 +42,10 @@ class SpeechJobQueueTests(unittest.TestCase):
 
 class DemoPipelinePlaybackTests(unittest.TestCase):
     def make_pipeline(self, capacity: int = 2) -> tuple[DemoPipeline, DemoState]:
-        args = SimpleNamespace(playback_queue_size=capacity, output_device=None, translation_model="local")
+        args = SimpleNamespace(
+            playback_queue_size=capacity, output_device=None, translation_model="local",
+            translation_context_phrases=2,
+        )
         state = DemoState()
         return DemoPipeline(args, state, object(), None), state
 
@@ -54,6 +57,25 @@ class DemoPipelinePlaybackTests(unittest.TestCase):
         self.assertIn("Hola.", [item["text"] for item in state.events_after(0)])
         queued, _ = pipeline.speech_queue.snapshot()
         self.assertEqual(queued, 1)
+        pipeline.speech_queue.close(discard=True)
+
+    def test_demo_translation_reuses_completed_phrase_context(self) -> None:
+        pipeline, _ = self.make_pipeline()
+        first = {"id": "phrase-1", "text": "First English."}
+        second = {"id": "phrase-2", "text": "Second English."}
+        contexts = []
+
+        def translated(_client, _model, _text, *, context):
+            contexts.append(context.pairs())
+            return "Primer español." if len(contexts) == 1 else "Segundo español."
+
+        with patch("live_audio_translation.demo.translate", side_effect=translated):
+            pipeline._translate_event(object(), first)
+            pipeline._translate_event(object(), second)
+        self.assertEqual(
+            [(pair.english, pair.spanish) for pair in contexts[1]],
+            [("First English.", "Primer español.")],
+        )
         pipeline.speech_queue.close(discard=True)
 
     def test_playback_worker_uses_one_at_a_time_fifo_order(self) -> None:

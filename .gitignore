@@ -35,3 +35,4 @@ backups/
 Screen*.png
 tmp/
 evaluation/
+tests/videos/

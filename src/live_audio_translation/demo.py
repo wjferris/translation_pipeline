@@ -30,6 +30,11 @@ from ollama import Client
 from piper.voice import PiperVoice
 
 from live_audio_translation.process_identity import PROCESS_TITLE_ENV, set_demo_process_title
+from live_audio_translation.phrase_context import (
+    DEFAULT_TRANSLATION_CONTEXT_PHRASES,
+    DEFAULT_WHISPER_CONTEXT_PHRASES,
+    TranslationContext,
+)
 from live_audio_translation.speak_stream import DEFAULT_MODEL_PATH, play_text
 from live_audio_translation.timing_trace import TRACE_TIMEBASE_ENV, TraceRun, run_configuration
 from live_audio_translation.transcribe_whisper import (
@@ -175,8 +180,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vad-min-phrase-seconds", type=float, default=0.7, help="Minimum VAD phrase (default: 0.7).")
     parser.add_argument("--vad-max-phrase-seconds", type=float, default=10.0, help="Maximum VAD phrase (default: 10).")
     parser.add_argument("--input-gain-db", type=float, default=0.0, help="Local microphone gain in dB from -48 through +48 (default: 0).")
+    parser.add_argument(
+        "--whisper-context-phrases", type=int, default=DEFAULT_WHISPER_CONTEXT_PHRASES,
+        help="Finalized English phrases supplied as short Whisper decoder context (default: 1; 0 disables).",
+    )
     parser.add_argument("--max-wait-seconds", type=float, default=5.0, help="Phrase buffer maximum wait (default: 5).")
     parser.add_argument("--translation-model", default=DEFAULT_MODEL, help=f"Local Ollama model (default: {DEFAULT_MODEL}).")
+    parser.add_argument(
+        "--translation-context-phrases", type=int, default=DEFAULT_TRANSLATION_CONTEXT_PHRASES,
+        help="Completed English/Spanish phrase pairs supplied as chat context (default: 2; 0 disables).",
+    )
     parser.add_argument("--piper-model", type=Path, default=DEFAULT_MODEL_PATH, help=f"Local Piper .onnx voice (default: {DEFAULT_MODEL_PATH}).")
     parser.add_argument("--output-device", help="Sounddevice output device name or index for Spanish audio.")
     parser.add_argument(
@@ -205,6 +218,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-wait-seconds must be greater than zero.")
     if not -48 <= args.input_gain_db <= 48:
         raise ValueError("--input-gain-db must be between -48 and 48.")
+    if getattr(args, "whisper_context_phrases", DEFAULT_WHISPER_CONTEXT_PHRASES) < 0:
+        raise ValueError("--whisper-context-phrases must be zero or greater.")
+    if getattr(args, "translation_context_phrases", DEFAULT_TRANSLATION_CONTEXT_PHRASES) < 0:
+        raise ValueError("--translation-context-phrases must be zero or greater.")
     if not 1 <= args.playback_queue_size <= 100:
         raise ValueError("--playback-queue-size must be between 1 and 100.")
 
@@ -233,6 +250,10 @@ def microphone_command(args: argparse.Namespace) -> list[str]:
         command.extend(["--window-seconds", str(args.window_seconds), "--stride-seconds", str(args.stride_seconds)])
     if args.input_gain_db:
         command.extend(["--input-gain-db", str(args.input_gain_db)])
+    command.extend([
+        "--whisper-context-phrases",
+        str(getattr(args, "whisper_context_phrases", DEFAULT_WHISPER_CONTEXT_PHRASES)),
+    ])
     return command
 
 
@@ -321,6 +342,9 @@ class DemoPipeline:
         self.translation_thread: threading.Thread | None = None
         self.playback_thread: threading.Thread | None = None
         self.speech_queue = SpeechJobQueue(getattr(args, "playback_queue_size", DEFAULT_PLAYBACK_QUEUE_SIZE))
+        self.translation_context = TranslationContext(
+            getattr(args, "translation_context_phrases", DEFAULT_TRANSLATION_CONTEXT_PHRASES)
+        )
         self._audio_backlog = False
 
     def start(self) -> None:
@@ -397,7 +421,9 @@ class DemoPipeline:
             timing.setdefault("queue_depths", {})["translation"] = {"physical": None, "logical_pending": 1}
         self.state.publish("status", "Translating…")
         try:
-            spanish = translate(client, self.args.translation_model, event["text"])
+            spanish = translate(
+                client, self.args.translation_model, event["text"], context=self.translation_context
+            )
         except Exception as error:
             print(f"Translation failed: {error}", file=sys.stderr)
             self.state.publish("status", "Translation unavailable — see operator terminal.")
@@ -411,6 +437,7 @@ class DemoPipeline:
             translated_event["timing"] = timing
             self.trace.stage("translations", translated_event)
         self.state.publish("spanish", spanish)
+        self.translation_context.add(event["text"], spanish)
         job = SpeechJob(spanish, translated_event, time.monotonic_ns())
         try:
             evicted, depth, oldest_age_ms = self.speech_queue.enqueue(job)
@@ -550,6 +577,11 @@ def main() -> None:
         print(
             f"BabelFish session and process group: {os.getpgrp()} (demo PID {os.getpid()}; "
             "ASR and phrase buffer inherit this isolated group).",
+            file=sys.stderr,
+        )
+        print(
+            f"Context: Whisper {args.whisper_context_phrases} prior finalized phrase(s); "
+            f"Translation {args.translation_context_phrases} completed pair(s).",
             file=sys.stderr,
         )
         if not args.no_open_browser:

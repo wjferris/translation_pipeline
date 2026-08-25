@@ -27,6 +27,10 @@ import webrtcvad
 from silero_vad import VADIterator, load_silero_vad
 
 from live_audio_translation.process_identity import set_demo_process_title
+from live_audio_translation.phrase_context import (
+    DEFAULT_WHISPER_CONTEXT_PHRASES,
+    EnglishContext,
+)
 from live_audio_translation.timing_trace import (
     empty_timestamps,
     relative_monotonic_ns,
@@ -185,6 +189,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Local microphone gain in dB from -48 through +48 (default: 0).",
+    )
+    parser.add_argument(
+        "--whisper-context-phrases",
+        type=int,
+        default=DEFAULT_WHISPER_CONTEXT_PHRASES,
+        help="Finalized English phrases supplied as short Whisper decoder context (default: 1; 0 disables).",
     )
     return parser.parse_args()
 
@@ -512,11 +522,13 @@ def transcribe_windows(
     output_format: str,
     silero_vad_model: Path | None = None,
     timebase_ns: int | None = None,
+    whisper_context_phrases: int = DEFAULT_WHISPER_CONTEXT_PHRASES,
 ) -> None:
     """Write queued audio to temporary WAV files and emit finalized transcripts."""
     previous = ""
     sequence = 0
     silero_covered_until_ms = 0
+    context = EnglishContext(whisper_context_phrases)
     while not stop_event.is_set():
         try:
             window = windows.get(timeout=0.1)
@@ -538,10 +550,12 @@ def transcribe_windows(
         try:
             sf.write(window_path, window.audio, SAMPLE_RATE)
             event_start_ms, event_end_ms = window.start_ms, window.end_ms
+            prompt = context.prompt()
             if silero_vad_model is not None:
                 segments = new_timed_segments(
                     transcribe_timed(
-                        window_path, language, cancel_event=stop_event, silero_vad_model=silero_vad_model
+                        window_path, language, cancel_event=stop_event, silero_vad_model=silero_vad_model,
+                        prompt=prompt,
                     ),
                     window.start_ms,
                     silero_covered_until_ms,
@@ -552,7 +566,7 @@ def transcribe_windows(
                     event_start_ms, event_end_ms = segments[0].start_ms, segments[-1].end_ms
             else:
                 transcript = transcribe(
-                    window_path, language, show_status=False, cancel_event=stop_event
+                    window_path, language, show_status=False, cancel_event=stop_event, prompt=prompt
                 )
             if timebase_ns is not None:
                 timestamps["asr_complete"] = relative_monotonic_ns(timebase_ns)
@@ -576,6 +590,7 @@ def transcribe_windows(
                         print(new_text, file=sys.stderr, flush=True)
                     else:
                         print(new_text, flush=True)
+                    context.add(new_text)
                 previous = transcript
         except TranscriptionCancelled:
             break
@@ -595,6 +610,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--stride-seconds cannot exceed --window-seconds.")
     if args.duration is not None and args.duration <= 0:
         raise ValueError("--duration must be greater than zero.")
+    if getattr(args, "whisper_context_phrases", DEFAULT_WHISPER_CONTEXT_PHRASES) < 0:
+        raise ValueError("--whisper-context-phrases must be zero or greater.")
     if not MIN_INPUT_GAIN_DB <= args.input_gain_db <= MAX_INPUT_GAIN_DB:
         raise ValueError(
             f"--input-gain-db must be between {MIN_INPUT_GAIN_DB:g} and {MAX_INPUT_GAIN_DB:g}."
@@ -672,14 +689,21 @@ def main() -> None:
     segmenter_thread = threading.Thread(target=segmenter.run, name="audio-segmenter")
     worker_thread = threading.Thread(
         target=transcribe_windows,
-        args=(windows, warnings, stop_event, args.language, args.output_format, None, trace_timebase_ns),
+        args=(
+            windows, warnings, stop_event, args.language, args.output_format, None, trace_timebase_ns,
+            args.whisper_context_phrases,
+        ),
         name="whisper-worker",
     )
     segmenter_thread.start()
     worker_thread.start()
 
     started_at = time.monotonic()
-    print(f"{listening_message} Input gain: {input_gain_label} dB.", file=sys.stderr)
+    print(
+        f"{listening_message} Input gain: {input_gain_label} dB. Whisper context: "
+        f"{args.whisper_context_phrases} prior finalized phrase(s).",
+        file=sys.stderr,
+    )
     try:
         with sd.InputStream(
             samplerate=SAMPLE_RATE,

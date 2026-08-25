@@ -51,6 +51,13 @@ class SileroCapabilityTests(unittest.TestCase):
         )
         self.assertNotIn("--vad", baseline)
 
+    def test_transcription_command_can_add_prior_english_prompt(self) -> None:
+        command = transcribe_whisper.transcription_command(
+            "whisper", Path("medium.bin"), "en", Path("output"), Path("input.wav"),
+            prompt="Prior English sentence.",
+        )
+        self.assertEqual(command[-2:], ["--prompt", "Prior English sentence."])
+
     def test_reads_and_remaps_timestamped_whisper_segments(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result"
@@ -134,6 +141,7 @@ class VadBackendSelectionTests(unittest.TestCase):
             vad_min_phrase_seconds=0.7,
             vad_max_phrase_seconds=10.0,
             input_gain_db=0.0,
+            whisper_context_phrases=1,
         )
         with self.assertRaisesRegex(ValueError, "only valid with --segmentation vad"):
             transcribe_microphone.validate_args(args)
@@ -155,10 +163,15 @@ class VadBackendSelectionTests(unittest.TestCase):
             window_seconds=5.0,
             stride_seconds=4.0,
             input_gain_db=30.0,
+            whisper_context_phrases=1,
         )
         command = demo.microphone_command(args)
         self.assertIn("--vad-backend", command)
-        self.assertEqual(command[-2:], ["--input-gain-db", "30.0"])
+        self.assertEqual(
+            command[command.index("--input-gain-db") : command.index("--input-gain-db") + 2],
+            ["--input-gain-db", "30.0"],
+        )
+        self.assertIn("--whisper-context-phrases", command)
         self.assertNotIn("--vad-aggressiveness", command)
 
 
@@ -202,6 +215,7 @@ class InputGainTests(unittest.TestCase):
             vad_pre_roll_seconds=0.3,
             vad_min_phrase_seconds=0.7,
             vad_max_phrase_seconds=10.0,
+            whisper_context_phrases=1,
         )
         for gain in (transcribe_microphone.MIN_INPUT_GAIN_DB, transcribe_microphone.MAX_INPUT_GAIN_DB):
             transcribe_microphone.validate_args(SimpleNamespace(**base_args, input_gain_db=gain))
@@ -220,6 +234,7 @@ class InputGainTests(unittest.TestCase):
             vad_pre_roll_seconds=0.3,
             vad_min_phrase_seconds=0.7,
             vad_max_phrase_seconds=10.0,
+            whisper_context_phrases=1,
         )
         for gain in (-48.1, 48.1):
             with self.assertRaisesRegex(ValueError, "--input-gain-db must be between -48 and 48"):
